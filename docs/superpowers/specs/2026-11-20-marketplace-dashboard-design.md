@@ -55,11 +55,6 @@ Ozon FBS использует `awaiting_packaging` для новых заказ�
 - [FAQ Ozon for developers: статусы FBS и методы заказов](https://dev.ozon.ru/start/257-FAQ-spravochnik-oshibok-i-sposoby-ikh-resheniia?__rr=1).
 - [Ozon for developers: переход на новые FBS-этикетки](https://dev.ozon.ru/news/800-Podderzhka-novoi-etiketki-scanit-i-migratsiia-metodov-v-Seller-API/). В публикации от 18 сентября 2026 года указано, что прежние методы этикеток отключены 2 ноября 2026 года; для новых этикеток используются создание задания и отдельное получение PDF.
 
-## Источники по Seller API
-
-- [FAQ Ozon for developers: статусы FBS и методы заказов](https://dev.ozon.ru/start/257-FAQ-spravochnik-oshibok-i-sposoby-ikh-resheniia?__rr=1).
-- [Ozon for developers: переход на новые FBS-этикетки](https://dev.ozon.ru/news/800-Podderzhka-novoi-etiketki-scanit-i-migratsiia-metodov-v-Seller-API/). В публикации от 18 сентября 2026 года указано, что прежние методы этикеток отключены 2 ноября 2026 года; для новых этикеток используются создание задания и отдельное получение PDF.
-
 ## Технический выбор для плана
 
 Предлагаемый стек: Python 3.12, FastAPI, PostgreSQL 16, SQLAlchemy 2, Jinja2 + HTMX, `httpx`, Docker Compose v2 и Caddy для HTTPS. В первой версии избегаем отдельного SPA и Redis, чтобы уменьшить число сервисов.
