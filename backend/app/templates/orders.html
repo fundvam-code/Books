@@ -1,0 +1,54 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="heading">
+  <h1>Активные отправления</h1>
+  <span class="connection {{ 'online' if online else 'offline' }}">Агент {{ 'в сети' if online else 'не в сети' }}</span>
+</div>
+<nav class="tabs" aria-label="Кабинеты Ozon">
+  {% for key, title in [('all', 'Все кабинеты'), ('1', 'Кабинет 1'), ('2', 'Кабинет 2')] %}
+  <a href="/orders?account={{ key }}"{% if key == account %} aria-current="page"{% endif %}>{{ title }}</a>
+  {% endfor %}
+</nav>
+<section class="sync" aria-label="Синхронизация">
+  {% for cabinet in cabinets %}
+  <div>
+    <strong>Кабинет {{ cabinet.key }}</strong>
+    {% if cabinet.updated_at %}<span>Обновлён {{ cabinet.updated_at.strftime('%d.%m.%Y %H:%M') }} UTC</span>
+    {% else %}<span>Ожидаем первую загрузку</span>{% endif %}
+    {% if cabinet.error %}<span class="error">{{ cabinet.error }}</span>{% endif %}
+  </div>
+  {% endfor %}
+  <a class="button secondary" href="/orders?account={{ account }}">Обновить экран</a>
+</section>
+<div class="board">
+  {% for title, orders in columns %}
+  <section class="lane">
+    <h2>{{ title }} <span class="count">{{ orders|length }}</span></h2>
+    {% for order in orders %}
+    <article class="card">
+      <div class="card-title">
+        <a href="/orders/{{ order.account_key }}/{{ order.posting_number }}">{{ order.posting_number }}</a>
+        <span class="tag">Кабинет {{ order.account_key }}</span>
+      </div>
+      {% if order.data.shipment_date %}
+      <p class="due">Отгрузка {{ order.data.shipment_date[:16]|replace('T', ' ') }} UTC</p>
+      {% endif %}
+      <ul class="products">
+        {% for product in order.data.products[:3] %}
+        <li><span>{{ product.name or product.offer_id or 'Товар' }}</span><strong>× {{ product.quantity }}</strong></li>
+        {% endfor %}
+        {% if order.data.products|length > 3 %}<li>Ещё {{ order.data.products|length - 3 }}</li>{% endif %}
+      </ul>
+      {% if order.status == 'awaiting_deliver' %}
+      <form action="/orders/{{ order.account_key }}/{{ order.posting_number }}/label" method="post">
+        <button class="button secondary" type="submit">Печать этикетки</button>
+      </form>
+      {% endif %}
+    </article>
+    {% else %}
+    <p class="empty">Здесь пока нет отправлений.</p>
+    {% endfor %}
+  </section>
+  {% endfor %}
+</div>
+{% endblock %}

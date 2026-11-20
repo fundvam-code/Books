@@ -1,0 +1,11 @@
+[project]
+name = "ozon-fbs-dashboard"
+version = "0.1.0"
+requires-python = ">=3.12"
+dependencies = [
+  "fastapi>=0.115,<1", "uvicorn>=0.34,<1", "sqlalchemy>=2,<3",
+  "psycopg[binary]>=3.2,<4", "jinja2>=3.1,<4", "httpx>=0.28,<1"
+]
+
+[tool.setuptools]
+packages = []
