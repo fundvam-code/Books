@@ -1,226 +1,226 @@
-# Ozon FBS Dashboard Implementation Plan
+# План реализации дашборда Ozon FBS
 
-> **For agentic workers:** Use this plan task by task. Steps use checkbox syntax for tracking.
+> **Для исполнителей:** выполняйте задачи по порядку и отмечайте их флажками.
 
-**Goal:** Build a Docker-hosted dashboard for new and packed Ozon FBS orders across two seller accounts, with order details and official shipping-label printing through a local agent.
+**Цель:** создать дашборд в Docker для новых и собранных заказов Ozon FBS из двух кабинетов, с карточками заказов и печатью официальных этикеток через локальный агент.
 
-**Architecture:** A FastAPI server stores order snapshots and queued jobs in PostgreSQL. A local Docker agent polls the server over outbound HTTPS, reads Ozon credentials only on the user's PC, calls Seller API, and returns order data or temporary label PDFs. The dashboard is server-rendered with Jinja2 and HTMX.
+**Архитектура:** сервер FastAPI хранит снимки заказов и очередь заданий в PostgreSQL. Локальный агент в Docker опрашивает сервер по исходящему HTTPS, читает ключи Ozon только на ПК пользователя, вызывает Seller API и возвращает данные заказов или временные PDF этикеток. Страницы дашборда формируются на сервере с помощью Jinja2 и HTMX.
 
-**Tech Stack:** Python 3.12, FastAPI, SQLAlchemy 2, PostgreSQL 16, Jinja2, HTMX, httpx, Docker Compose v2, Caddy.
+**Стек:** Python 3.12, FastAPI, SQLAlchemy 2, PostgreSQL 16, Jinja2, HTMX, httpx, Docker Compose v2, Caddy.
 
-**Spec:** `docs/superpowers/specs/2026-11-20-marketplace-dashboard-design.md`
+**Спецификация:** `docs/superpowers/specs/2026-11-20-marketplace-dashboard-design.md`
 
-## Global Constraints
+## Общие ограничения
 
-- Ozon API credentials stay on the local PC and never enter Git or the Netherlands server.
-- Support two local credential profiles, represented as Cabinet 1 and Cabinet 2.
-- Use Ozon FBS statuses `awaiting_packaging` and `awaiting_deliver` for the two order columns.
-- Use Ozon's current asynchronous FBS label generation flow: `POST /v3/posting/fbs/package-label/create`, then `POST /v2/posting/fbs/package-label/get` until the PDF is ready.
-- The local agent makes only outbound HTTPS requests; do not require inbound ports on the PC.
-- Caddy Basic Auth protects dashboard and PDF routes; the agent API uses a separate bearer secret; HTTPS is required for public deployment.
-- No recipient details are shown in order cards by default; label PDFs are temporary and access-controlled.
-- Keep the stack to one API/web service, PostgreSQL, Caddy, and one local agent; do not add Redis or a separate SPA.
+- Ключи Ozon хранятся на локальном ПК и не попадают в Git или на сервер в Нидерландах.
+- Поддерживаются два локальных профиля доступа, отображаемых как «Кабинет 1» и «Кабинет 2».
+- Для двух колонок заказов используются статусы Ozon FBS `awaiting_packaging` и `awaiting_deliver`.
+- Для печати применяется актуальный асинхронный поток Seller API: `POST /v3/posting/fbs/package-label/create`, затем `POST /v2/posting/fbs/package-label/get` до готовности PDF.
+- Локальный агент устанавливает только исходящие HTTPS-соединения; входящие порты на ПК не открываются.
+- Caddy защищает страницы дашборда и PDF базовой HTTP-аутентификацией; API агента использует отдельный секрет Bearer; для публичного доступа обязателен HTTPS.
+- Данные получателя не показываются в карточках по умолчанию; PDF этикетки хранится временно и доступен после аутентификации.
+- Используются один веб/API-сервис, PostgreSQL, Caddy и локальный агент; Redis и отдельное SPA не добавляются.
 
-## Review Focus
+## На что обратить внимание при реализации
 
-- **Agent disconnect during a job:** leave the job retryable, show a stale/offline indicator, and avoid losing a label request; verify by stopping the agent during a label job and confirming the job can be claimed again.
-- **Ozon rate limits or transient API failures:** back off, preserve last successful order snapshot, and show when it was last updated.
-- **One invalid account key while the other works:** report the failure against the correct cabinet without hiding the healthy cabinet's data.
-- **Same posting number across two accounts:** scope order identity and updates by both account ID and posting number; verify identical posting numbers from two profiles remain separate rows.
-- **Label not ready or invalid status:** keep the request pending/retryable and return a clear status; do not display a broken or empty PDF.
+- **Агент отключился во время задания:** задание должно стать доступным для повторной обработки, в дашборде должен отображаться устаревший статус агента, запрос этикетки не должен теряться. Проверка: остановить агент во время задания печати и убедиться, что его можно получить повторно.
+- **Лимит запросов Ozon или временная ошибка API:** выдерживать паузу перед повторами, сохранять последний успешный снимок заказов и показывать время последнего обновления.
+- **Ключ одного кабинета неверен, второй работает:** показывать ошибку у соответствующего кабинета, не скрывая данные исправного кабинета.
+- **Номера отправлений совпали в двух кабинетах:** учитывать кабинет и номер отправления вместе; проверить, что одинаковые номера из двух профилей остаются отдельными заказами.
+- **Этикетка ещё не готова или статус заказа не подходит:** оставить запрос ожидающим или вернуть понятную ошибку; не показывать пустой или повреждённый PDF.
 
-## File Structure
+## Структура файлов
 
-| Path | Responsibility |
+| Путь | Назначение |
 |---|---|
-| `backend/app/main.py` | FastAPI application and route registration |
-| `backend/app/config.py` | Server configuration and secret loading |
-| `backend/app/db.py` | PostgreSQL engine and session lifecycle |
-| `backend/app/models.py` | Account, order, job, and label metadata tables |
-| `backend/app/schemas.py` | Server/agent request and response types |
-| `backend/app/routes/dashboard.py` | Authenticated order pages and PDF download |
-| `backend/app/routes/agent.py` | Agent job claim and result submission |
-| `backend/app/services/jobs.py` | Job creation, leasing, retry, and completion |
-| `backend/app/services/orders.py` | Upsert and query order snapshots |
-| `backend/app/templates/orders.html` | Two-account order list and status columns |
-| `backend/app/templates/order_detail.html` | Order detail page |
-| `agent/app/main.py` | Agent polling loop and job dispatch |
-| `agent/app/config.py` | Local credentials and server connection settings |
-| `agent/app/ozon.py` | Ozon Seller API calls and response mapping |
-| `agent/app/server.py` | Authenticated outbound calls to the dashboard server |
-| `compose.server.yaml` | Server, PostgreSQL, and Caddy services |
-| `compose.agent.yaml` | Local agent service and external `.env` loading |
-| `Caddyfile` | HTTPS reverse proxy and Basic Auth protection for dashboard/PDF routes |
-| `.env.server.example` | Safe server configuration template |
-| `.env.agent.example` | Safe local agent configuration template |
-| `README.md` | Local setup, remote deployment, and print workflow |
+| `backend/app/main.py` | Приложение FastAPI и подключение маршрутов |
+| `backend/app/config.py` | Настройки сервера и загрузка секретов |
+| `backend/app/db.py` | Подключение к PostgreSQL и управление сессиями |
+| `backend/app/models.py` | Таблицы кабинетов, заказов, заданий и метаданных этикеток |
+| `backend/app/schemas.py` | Типы запросов и ответов сервера и агента |
+| `backend/app/routes/dashboard.py` | Защищённые страницы заказов и выдача PDF |
+| `backend/app/routes/agent.py` | Получение заданий агентом и отправка результатов |
+| `backend/app/services/jobs.py` | Создание, аренда, повтор и завершение заданий |
+| `backend/app/services/orders.py` | Обновление и выборка снимков заказов |
+| `backend/app/templates/orders.html` | Две колонки статусов и выбор кабинета |
+| `backend/app/templates/order_detail.html` | Карточка заказа |
+| `agent/app/main.py` | Цикл опроса сервера и обработка заданий |
+| `agent/app/config.py` | Локальные ключи и настройки подключения к серверу |
+| `agent/app/ozon.py` | Вызовы Ozon Seller API и преобразование ответов |
+| `agent/app/server.py` | Исходящие аутентифицированные запросы к серверу дашборда |
+| `compose.server.yaml` | Сервисы сервера, PostgreSQL и Caddy |
+| `compose.agent.yaml` | Контейнер локального агента и загрузка внешнего `.env` |
+| `Caddyfile` | HTTPS обратный прокси и базовая аутентификация |
+| `.env.server.example` | Безопасный шаблон настроек сервера |
+| `.env.agent.example` | Безопасный шаблон настроек локального агента |
+| `README.md` | Настройка на ПК, развёртывание на сервере и печать |
 
-## Tasks
+## Задачи
 
-### Task 1: Application skeleton and container configuration
+### Задача 1: Каркас приложения и Docker-конфигурация
 
-**Files:**
-- Create: `pyproject.toml`
-- Create: `backend/Dockerfile`
-- Create: `agent/Dockerfile`
-- Create: `compose.server.yaml`
-- Create: `compose.agent.yaml`
-- Create: `Caddyfile`
-- Create: `.env.server.example`
-- Create: `.env.agent.example`
-- Modify: `.gitignore`
-- Modify: `README.md`
+**Файлы:**
+- Создать: `pyproject.toml`
+- Создать: `backend/Dockerfile`
+- Создать: `agent/Dockerfile`
+- Создать: `compose.server.yaml`
+- Создать: `compose.agent.yaml`
+- Создать: `Caddyfile`
+- Создать: `.env.server.example`
+- Создать: `.env.agent.example`
+- Изменить: `.gitignore`
+- Изменить: `README.md`
 
-**Interfaces:**
-- Server container listens on `8000` internally; Caddy exposes HTTPS on `443`.
-- Agent configuration uses `DASHBOARD_URL`, `AGENT_SHARED_SECRET`, `OZON_ENV_FILE`.
-- `compose.agent.yaml` loads the existing Ozon credentials through the configured external env-file path and never copies it into the image.
-- Server configuration uses `DATABASE_URL`, `PUBLIC_DOMAIN`, `DASHBOARD_USERNAME`, `DASHBOARD_PASSWORD_HASH`, and `AGENT_SHARED_SECRET`.
+**Интерфейсы:**
+- Серверный контейнер слушает порт `8000` внутри Docker-сети; Caddy принимает HTTPS на `443`.
+- Настройки агента: `DASHBOARD_URL`, `AGENT_SHARED_SECRET`, `OZON_ENV_FILE`.
+- `compose.agent.yaml` загружает внешний файл с ключами Ozon по указанному пути и не копирует его в образ.
+- Настройки сервера: `DATABASE_URL`, `PUBLIC_DOMAIN`, `DASHBOARD_USERNAME`, `DASHBOARD_PASSWORD_HASH`, `AGENT_SHARED_SECRET`.
 
-- [ ] Create the Python project metadata with runtime floor Python `>=3.12` and runtime dependencies FastAPI, SQLAlchemy, psycopg, Jinja2, httpx, and uvicorn.
-- [ ] Create server and agent Dockerfiles that run as non-root and install only their declared project dependencies.
-- [ ] Define server Compose services for API, PostgreSQL 16, and Caddy with a persistent database volume and health checks; Caddy applies Basic Auth to all proxied dashboard and PDF routes.
-- [ ] Define local-agent Compose configuration that receives server URL/shared secret from `.env.agent` and loads the external Ozon `.env` using `OZON_ENV_FILE`.
-- [ ] Add ignore rules for real `.env*`, local database/PDF volumes, Python caches, and logs; keep only `*.example` templates tracked.
-- [ ] Document required environment values and startup commands for local agent and remote server.
-- [ ] Check `docker compose -f compose.server.yaml config` and `docker compose --env-file .env.agent -f compose.agent.yaml config` with placeholder environment files; confirm rendered configs contain no API key values.
+- [ ] Создать метаданные Python-проекта с минимальной версией Python `>=3.12` и зависимостями FastAPI, SQLAlchemy, psycopg, Jinja2, httpx и uvicorn.
+- [ ] Создать Dockerfile сервера и агента: запуск не от root и установка только объявленных зависимостей проекта.
+- [ ] Описать в Compose сервисы API, PostgreSQL 16 и Caddy, постоянный том базы и проверки состояния контейнеров.
+- [ ] Описать локальный Compose агента: `DASHBOARD_URL` и общий секрет берутся из `.env.agent`, ключи Ozon — из внешнего `.env` по `OZON_ENV_FILE`.
+- [ ] Добавить в `.gitignore` реальные файлы `.env*`, локальные тома базы/PDF, кэш Python и логи; оставить отслеживаемыми только шаблоны `*.example`.
+- [ ] Описать необходимые переменные окружения и команды запуска агента на ПК и сервера.
+- [ ] На пустых шаблонах проверить `docker compose -f compose.server.yaml config` и `docker compose --env-file .env.agent -f compose.agent.yaml config`; убедиться, что в итоговой конфигурации нет значений API-ключей.
 
-### Task 2: Persistent models and server job queue
+### Задача 2: Модели хранения и очередь заданий
 
-**Files:**
-- Create: `backend/app/config.py`
-- Create: `backend/app/db.py`
-- Create: `backend/app/models.py`
-- Create: `backend/app/schemas.py`
-- Create: `backend/app/services/jobs.py`
-- Create: `backend/app/main.py`
+**Файлы:**
+- Создать: `backend/app/config.py`
+- Создать: `backend/app/db.py`
+- Создать: `backend/app/models.py`
+- Создать: `backend/app/schemas.py`
+- Создать: `backend/app/services/jobs.py`
+- Создать: `backend/app/main.py`
 
-**Interfaces:**
+**Интерфейсы:**
 - `AgentJob`: `{id: UUID, kind: "sync_orders" | "label_pdf", account_key: "1" | "2", payload: dict}`.
-- `POST /api/agent/jobs/claim` returns one leased `AgentJob` or `204` when none is available; requires agent bearer authentication.
-- `POST /api/agent/jobs/{job_id}/complete` accepts `{status: "succeeded" | "retryable_error" | "permanent_error", result: dict | null, error: str | null}`.
-- `PUT /api/agent/jobs/{job_id}/label` accepts a PDF body with `Content-Type: application/pdf` and stores it in the private label volume.
-- Job lease timeout is 90 seconds; active jobs renew the lease every 30 seconds; retryable jobs use exponential delay capped at 5 minutes.
+- `POST /api/agent/jobs/claim` возвращает одно арендованное задание `AgentJob` либо `204`, если очередь пуста; требуется Bearer-аутентификация агента.
+- `POST /api/agent/jobs/{job_id}/complete` принимает `{status: "succeeded" | "retryable_error" | "permanent_error", result: dict | null, error: str | null}`.
+- `PUT /api/agent/jobs/{job_id}/label` принимает PDF-тело с `Content-Type: application/pdf` и сохраняет его в закрытом томе для этикеток.
+- Срок аренды задания — 90 секунд; активное задание продлевает аренду каждые 30 секунд; задержка повторов с ростом до максимума 5 минут.
 
-- [ ] Add SQLAlchemy models for `Order`, `AgentJob`, and `AgentHeartbeat`; make order uniqueness `(account_key, posting_number)`.
-- [ ] Add database session lifecycle, startup migration mechanism, and settings validation for missing secrets.
-- [ ] Implement atomic job claim with a 90-second lease so concurrent agent requests cannot claim the same job.
-- [ ] Implement lease renewal for an active job; reject renewal when the job is completed or belongs to a different agent.
-- [ ] Implement job completion and retry state transitions using the schema above.
-- [ ] Add the authenticated agent routes and return `204` when the queue is empty.
-- [ ] Verify two concurrent claim requests cannot return the same job and an expired lease becomes claimable again using a focused local verification script or database session.
-- [ ] Verify an active label job remains leased after renewal and cannot be claimed by another agent.
+- [ ] Добавить модели SQLAlchemy `Order`, `AgentJob` и `AgentHeartbeat`; уникальность заказа задаётся парой `(account_key, posting_number)`.
+- [ ] Добавить управление сессиями базы, механизм миграций при запуске и проверку обязательных секретов в настройках.
+- [ ] Реализовать атомарное получение задания с арендой на 90 секунд, чтобы два параллельных запроса агента не получили одно задание.
+- [ ] Реализовать продление аренды активного задания; отклонять продление завершённого задания или задания другого агента.
+- [ ] Реализовать завершение задания и переходы для повторной обработки по указанной схеме.
+- [ ] Добавить защищённые маршруты API агента и ответ `204`, когда очередь пуста.
+- [ ] Локальной проверкой подтвердить, что два параллельных запроса не получают одно задание, а задание с истёкшей арендой снова доступно.
+- [ ] Подтвердить, что продлённое задание печати остаётся закреплённым за агентом и не выдаётся другому агенту.
 
-### Task 3: Local agent connection and health status
+### Задача 3: Подключение локального агента и состояние связи
 
-**Files:**
-- Create: `agent/app/config.py`
-- Create: `agent/app/server.py`
-- Create: `agent/app/main.py`
-- Modify: `backend/app/routes/agent.py`
-- Modify: `backend/app/models.py`
+**Файлы:**
+- Создать: `agent/app/config.py`
+- Создать: `agent/app/server.py`
+- Создать: `agent/app/main.py`
+- Изменить: `backend/app/routes/agent.py`
+- Изменить: `backend/app/models.py`
 
-**Interfaces:**
-- Agent polls `POST /api/agent/jobs/claim` over HTTPS with `Authorization: Bearer <AGENT_SHARED_SECRET>`.
-- Agent renews an active job with `POST /api/agent/jobs/{job_id}/renew` every 30 seconds.
-- `POST /api/agent/heartbeat` accepts `{agent_version: str, account_keys: ["1", "2"], observed_at: datetime}`.
-- Dashboard agent is online when heartbeat age is at most 120 seconds.
+**Интерфейсы:**
+- Агент опрашивает `POST /api/agent/jobs/claim` по HTTPS с заголовком `Authorization: Bearer <AGENT_SHARED_SECRET>`.
+- Агент продлевает аренду активного задания через `POST /api/agent/jobs/{job_id}/renew` каждые 30 секунд.
+- `POST /api/agent/heartbeat` принимает `{agent_version: str, account_keys: ["1", "2"], observed_at: datetime}`.
+- Агент считается подключённым, если последнее сообщение о состоянии получено не более 120 секунд назад.
 
-- [ ] Implement agent configuration validation; fail closed if server URL, shared secret, or both Ozon account credentials are missing.
-- [ ] Implement outbound polling with bounded connection/read timeouts and exponential reconnect delay up to 60 seconds.
-- [ ] Implement heartbeat updates and a dashboard-readable online/offline state.
-- [ ] Restrict the server agent routes to the configured shared secret and redact authorization headers from logs.
-- [ ] Verify with the agent process stopped that the server marks it offline within 120 seconds, then returns online after restart and heartbeat.
+- [ ] Проверять настройки агента при запуске; не продолжать работу, если отсутствуют URL сервера, общий секрет или ключи обоих кабинетов Ozon.
+- [ ] Реализовать опрос сервера с ограниченными тайм-аутами подключения/чтения и возрастающей задержкой повторного подключения до 60 секунд.
+- [ ] Реализовать сообщения о состоянии агента и доступное дашборду состояние «в сети/не в сети».
+- [ ] Ограничить маршруты агента общим секретом и удалять заголовок авторизации из журналов.
+- [ ] Проверить, что сервер отмечает агента отключённым не позднее 120 секунд после остановки, а после перезапуска снова показывает его подключённым.
 
-### Task 4: Ozon FBS order synchronization
+### Задача 4: Синхронизация заказов Ozon FBS
 
-**Files:**
-- Create: `agent/app/ozon.py`
-- Create: `backend/app/services/orders.py`
-- Create: `backend/app/routes/dashboard.py`
-- Modify: `backend/app/services/jobs.py`
-- Modify: `backend/app/schemas.py`
-- Modify: `backend/app/models.py`
+**Файлы:**
+- Создать: `agent/app/ozon.py`
+- Создать: `backend/app/services/orders.py`
+- Создать: `backend/app/routes/dashboard.py`
+- Изменить: `backend/app/services/jobs.py`
+- Изменить: `backend/app/schemas.py`
+- Изменить: `backend/app/models.py`
 
-**Interfaces:**
-- Agent uses `POST /v4/posting/fbs/list` to fetch FBS postings with statuses `awaiting_packaging` and `awaiting_deliver` for each local account profile.
-- Ozon request headers are `Client-Id` and `Api-Key`; they are constructed only in the agent process.
-- Agent submits normalized snapshots to `POST /api/agent/jobs/{job_id}/complete`.
-- Order snapshot fields: `account_key`, `posting_number`, `status`, `created_at`, `shipment_date`, `products[]` with `name`, `offer_id`, `sku`, `quantity`, `price`, plus nullable `warehouse` and `delivery_method`.
-- Server enqueues account sync jobs once per minute; dashboard reports last successful sync timestamp per account.
+**Интерфейсы:**
+- Агент использует `POST /v4/posting/fbs/list` для получения отправлений FBS со статусами `awaiting_packaging` и `awaiting_deliver` для каждого локального профиля.
+- Заголовки Ozon `Client-Id` и `Api-Key` формируются только в процессе агента.
+- Агент отправляет преобразованные снимки через `POST /api/agent/jobs/{job_id}/complete`.
+- Поля снимка: `account_key`, `posting_number`, `status`, `created_at`, `shipment_date`, `products[]` с полями `name`, `offer_id`, `sku`, `quantity`, `price`, а также необязательные `warehouse` и `delivery_method`.
+- Сервер ставит задания синхронизации для каждого кабинета раз в минуту; дашборд показывает время последней успешной синхронизации каждого кабинета.
 
-- [ ] Map the two local `OZON_*_1` / `OZON_*_2` groups to stable account keys `1` and `2` without returning secret fields to the server.
-- [ ] Implement paginated FBS order retrieval for the two selected statuses using the current Seller API schema.
-- [ ] Normalize optional Ozon fields without failing the whole account sync when a nonessential field is absent.
-- [ ] Upsert snapshots by `(account_key, posting_number)` and retain last successful data if Ozon returns an error.
-- [ ] Add a once-per-minute scheduler that creates at most one pending sync job per account.
-- [ ] Verify both accounts populate independently, the two status groups are separated, and an invalid key for one account leaves the other account visible.
+- [ ] Сопоставить две локальные группы `OZON_*_1` и `OZON_*_2` со стабильными ключами кабинетов `1` и `2`, не отправляя секретные поля на сервер.
+- [ ] Реализовать постраничное получение FBS-заказов по двум выбранным статусам согласно актуальной схеме Seller API.
+- [ ] Преобразовывать необязательные поля Ozon так, чтобы отсутствие второстепенного значения не прерывало синхронизацию кабинета.
+- [ ] Обновлять снимки по паре `(account_key, posting_number)` и сохранять последнее успешное состояние при ошибке Ozon.
+- [ ] Добавить планировщик раз в минуту; не создавать больше одного ожидающего задания синхронизации на кабинет.
+- [ ] Проверить независимую загрузку двух кабинетов, распределение по статусам, сохранение заказов с одинаковым номером в разных кабинетах и видимость исправного кабинета при неверном ключе второго.
 
-### Task 5: Dashboard order list and details
+### Задача 5: Список заказов и карточка в дашборде
 
-**Files:**
-- Modify: `backend/app/routes/dashboard.py`
-- Create: `backend/app/templates/base.html`
-- Create: `backend/app/templates/orders.html`
-- Create: `backend/app/templates/order_detail.html`
-- Modify: `backend/app/main.py`
+**Файлы:**
+- Изменить: `backend/app/routes/dashboard.py`
+- Создать: `backend/app/templates/base.html`
+- Создать: `backend/app/templates/orders.html`
+- Создать: `backend/app/templates/order_detail.html`
+- Изменить: `backend/app/main.py`
 
-**Interfaces:**
-- `GET /orders?account=all|1|2` renders account tabs and two status columns.
-- `GET /orders/{account_key}/{posting_number}` renders order details.
-- Display only orders whose status is `awaiting_packaging` or `awaiting_deliver`.
-- Authentication is required for every page.
+**Интерфейсы:**
+- `GET /orders?account=all|1|2` показывает вкладки кабинетов и две колонки статусов.
+- `GET /orders/{account_key}/{posting_number}` показывает карточку заказа.
+- Показываются только заказы со статусами `awaiting_packaging` и `awaiting_deliver`.
+- Caddy требует аутентификацию для всех страниц и PDF-файлов.
 
-- [ ] Configure Caddy Basic Auth using `DASHBOARD_USERNAME` and `DASHBOARD_PASSWORD_HASH`; confirm Caddy protects order pages and label PDFs.
-- [ ] Render Cabinet 1/Cabinet 2/All tabs and the two Russian status columns.
-- [ ] Render order number, order time, shipment deadline, product name, offer ID/SKU, quantity, price, warehouse, and delivery method where present.
-- [ ] Show per-account last-sync time and agent online/offline state.
-- [ ] Verify the page remains usable when optional Ozon fields are missing, an account has no orders, or the agent is offline.
+- [ ] Настроить Caddy Basic Auth через `DASHBOARD_USERNAME` и `DASHBOARD_PASSWORD_HASH`; проверить защиту страниц заказов и PDF.
+- [ ] Отобразить вкладки «Кабинет 1», «Кабинет 2», «Все» и две колонки с русскими названиями статусов.
+- [ ] Отобразить номер и время заказа, срок отгрузки, название товара, offer ID/SKU, количество, цену, склад и способ доставки, если они доступны.
+- [ ] Показать время последней синхронизации и состояние агента отдельно для каждого кабинета.
+- [ ] Проверить работу страницы при отсутствии необязательных полей Ozon, пустом кабинете или отключённом агенте.
 
-### Task 6: Ozon label generation and PDF print flow
+### Задача 6: Получение этикетки Ozon и печать PDF
 
-**Files:**
-- Create: `backend/app/services/labels.py`
-- Modify: `backend/app/routes/dashboard.py`
-- Modify: `backend/app/services/jobs.py`
-- Modify: `agent/app/ozon.py`
-- Modify: `agent/app/main.py`
-- Modify: `backend/app/config.py`
-- Modify: `compose.server.yaml`
+**Файлы:**
+- Создать: `backend/app/services/labels.py`
+- Изменить: `backend/app/routes/dashboard.py`
+- Изменить: `backend/app/services/jobs.py`
+- Изменить: `agent/app/ozon.py`
+- Изменить: `agent/app/main.py`
+- Изменить: `backend/app/config.py`
+- Изменить: `compose.server.yaml`
 
-**Interfaces:**
-- `POST /orders/{account_key}/{posting_number}/label` creates one `label_pdf` agent job and returns a pending status page.
-- `GET /labels/{job_id}` returns label state (`pending`, `ready`, or `failed`) for the authenticated dashboard.
-- Agent calls `POST /v3/posting/fbs/package-label/create`, then polls `POST /v2/posting/fbs/package-label/get` until ready or failed.
-- Agent uploads the completed PDF to `PUT /api/agent/jobs/{job_id}/label`; the server saves it in the private label volume at `{job_id}.pdf`; `GET /labels/{job_id}.pdf` requires dashboard authentication.
-- Label files expire after 24 hours.
+**Интерфейсы:**
+- `POST /orders/{account_key}/{posting_number}/label` создаёт одно задание агента `label_pdf` и возвращает страницу ожидания.
+- `GET /labels/{job_id}` возвращает состояние этикетки: `pending`, `ready` или `failed`.
+- Агент вызывает `POST /v3/posting/fbs/package-label/create`, затем опрашивает `POST /v2/posting/fbs/package-label/get` до готовности или ошибки.
+- Агент загружает готовый PDF через `PUT /api/agent/jobs/{job_id}/label`; сервер сохраняет его в закрытом томе как `{job_id}.pdf`.
+- `GET /labels/{job_id}.pdf` требует аутентификации; файл удаляется через 24 часа.
 
-- [ ] Add a print action only for an order in `awaiting_deliver` status.
-- [ ] Implement asynchronous Ozon label creation/retrieval with bounded retry count and clear permanent/retryable error mapping.
-- [ ] Return the completed PDF as `application/pdf` through an authenticated route; do not log or commit PDF bytes.
-- [ ] Add cleanup of PDF files older than 24 hours and persist only label-job status and expiry metadata.
-- [ ] Verify an eligible order produces a readable PDF, an ineligible status shows a useful message, and the PDF route rejects unauthenticated access.
+- [ ] Показывать кнопку печати только для заказа со статусом `awaiting_deliver`.
+- [ ] Реализовать асинхронное создание и получение этикетки с ограниченным числом повторов и понятным разделением временных и окончательных ошибок.
+- [ ] Возвращать PDF как `application/pdf` через защищённый маршрут; не записывать байты PDF в журналы и не добавлять их в Git.
+- [ ] Удалять PDF старше 24 часов; сохранять только состояние задания и срок хранения файла.
+- [ ] Проверить получение читаемого PDF для подходящего заказа, понятное сообщение при неподходящем статусе и отказ в доступе к PDF без аутентификации.
 
-### Task 7: Remote deployment and operator guide
+### Задача 7: Развёртывание и руководство оператора
 
-**Files:**
-- Modify: `README.md`
-- Modify: `compose.server.yaml`
-- Modify: `compose.agent.yaml`
-- Modify: `Caddyfile`
-- Create: `docs/deploy.md`
-- Create: `docs/operations.md`
+**Файлы:**
+- Изменить: `README.md`
+- Изменить: `compose.server.yaml`
+- Изменить: `compose.agent.yaml`
+- Изменить: `Caddyfile`
+- Создать: `docs/deploy.md`
+- Создать: `docs/operations.md`
 
-**Interfaces:**
-- Remote startup: `docker compose --env-file .env.server -f compose.server.yaml up -d`.
-- Local agent startup: `docker compose --env-file .env.agent -f compose.agent.yaml up -d`.
-- Public deployment requires a domain, DNS pointing to the NL server, HTTPS, dashboard login, and a locally allowed egress IP for Ozon.
+**Интерфейсы:**
+- Запуск сервера: `docker compose --env-file .env.server -f compose.server.yaml up -d`.
+- Запуск локального агента: `docker compose --env-file .env.agent -f compose.agent.yaml up -d`.
+- Для публичного развёртывания нужны домен, DNS на сервер в Нидерландах, HTTPS, пароль дашборда и внешний IP ПК, разрешённый Ozon.
 
-- [ ] Document first-time setup, secret creation, environment file paths, update/restart commands, and backup of PostgreSQL.
-- [ ] Document how to verify agent connection, order freshness, per-account API failures, and label PDF expiry.
-- [ ] Confirm the production Compose configuration does not mount the local Ozon `.env` on the server and the agent Compose file has no inbound port mapping.
-- [ ] Confirm the user can start the server and local agent from a clean clone by following only the docs.
+- [ ] Описать первую настройку, создание секретов, расположение файлов окружения, команды обновления/перезапуска и резервное копирование PostgreSQL.
+- [ ] Описать проверку подключения агента, свежести заказов, ошибок API по кабинетам и срока удаления PDF этикеток.
+- [ ] Убедиться, что серверный Compose не подключает локальный `.env` Ozon, а Compose агента не публикует входящие порты.
+- [ ] Убедиться, что пользователь может развернуть сервер и запустить агент после чистого клонирования, следуя только документации.
 
-## Execution Order
+## Порядок выполнения
 
-Complete Tasks 1–3 first to establish infrastructure and the outbound agent channel; Task 4 supplies order data; Task 5 displays it; Task 6 adds labels; Task 7 finishes deployment and operator guidance. The dashboard is not ready for use until Task 6 works end to end, while Tasks 1–5 provide a working read-only order view.
+Сначала выполнить задачи 1–3 для инфраструктуры и исходящего канала агента; задача 4 добавляет данные заказов, задача 5 показывает их, задача 6 добавляет этикетки, задача 7 завершает развёртывание и руководство. Задачи 1–5 дают просмотр заказов; для полной первой версии также нужна работающая печать из задачи 6.
