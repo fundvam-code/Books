@@ -1,0 +1,167 @@
+import asyncio
+import logging
+import re
+from base64 import b64decode
+from datetime import UTC, datetime, timedelta
+from decimal import Decimal
+from math import ceil
+from time import monotonic
+
+import httpx
+
+from .errors import MarketplaceError
+
+MARKETPLACE = "https://marketplace-api.wildberries.ru"
+CONTENT = "https://content-api.wildberries.ru"
+ACCOUNT = "w"
+PAGE_SIZE = 1000
+ACTIVE = {"new": "wb_new", "confirm": "wb_confirm", "complete": "wb_complete"}
+log = logging.getLogger(__name__)
+
+
+class Wildberries:
+    def __init__(self, client, token, content_token=""):
+        self.client = client
+        self.token = token
+        self.content_token = content_token
+        self.next_request = {}
+        self.rate_limited_until = {}
+        self.titles = {}
+        self.content_retry_at = 0
+
+    async def request(self, method, path, *, content=False, label=False, **kwargs):
+        origin, token, interval = (CONTENT, self.content_token, 0.75) if content else (MARKETPLACE, self.token, 0.2)
+        instant = monotonic()
+        cooldown = ceil(self.rate_limited_until.get(origin, 0) - instant)
+        if cooldown > 0:
+            raise MarketplaceError("rate", True, cooldown)
+        delay = self.next_request.get(origin, 0) - instant
+        if delay > 0:
+            await asyncio.sleep(delay)
+        self.next_request[origin] = monotonic() + interval
+        try:
+            reply = await self.client.request(method, origin + path, headers={"Authorization": token}, **kwargs)
+        except httpx.RequestError as error:
+            raise MarketplaceError("unavailable", True) from error
+
+        code = reply.status_code
+        if code == 429:
+            after = reply.headers.get("x-ratelimit-retry") or reply.headers.get("retry-after", "")
+            wait = min(int(after), 3600) if after.isascii() and after.isdecimal() and len(after) <= 8 else 30
+            self.rate_limited_until[origin] = monotonic() + wait
+            raise MarketplaceError("rate", True, wait)
+        if code >= 500 or code in (408, 425):
+            raise MarketplaceError("unavailable", True)
+        if code in (401, 402, 403):
+            raise MarketplaceError("access")
+        if code != 200:
+            raise MarketplaceError("label" if label else "response", label and code == 409)
+        try:
+            data = reply.json()
+        except ValueError as error:
+            raise MarketplaceError("response", True) from error
+        if not isinstance(data, dict):
+            raise MarketplaceError("response", True)
+        return data
+
+    async def snapshot(self, key, _known):
+        end = datetime.now(UTC)
+        start = end - timedelta(days=29)
+        params = {"limit": PAGE_SIZE, "next": 0, "dateFrom": int(start.timestamp()), "dateTo": int(end.timestamp())}
+        orders = {}
+        cursors = {0}
+        while True:
+            page = await self.request("GET", "/api/v3/orders", params=params)
+            rows, cursor = page["orders"], page["next"]
+            if not isinstance(rows, list) or type(cursor) is not int or cursor < 0:
+                raise MarketplaceError("response", True)
+            for row in rows:
+                orders[row["id"]] = row
+            if not rows or cursor == 0:
+                break
+            if cursor in cursors:
+                raise MarketplaceError("response", True)
+            cursors.add(cursor)
+            params["next"] = cursor
+
+        statuses = {}
+        ids = list(orders)
+        for offset in range(0, len(ids), PAGE_SIZE):
+            batch = ids[offset:offset + PAGE_SIZE]
+            result = await self.request("POST", "/api/v3/orders/status", json={"orders": batch})
+            received = {row["id"]: row for row in result["orders"]}
+            if received.keys() != set(batch):
+                raise MarketplaceError("response", True)
+            statuses.update(received)
+
+        active = [
+            (row, ACTIVE[status["supplierStatus"]])
+            for number, row in orders.items()
+            if (status := statuses[number])["wbStatus"] == "waiting" and status["supplierStatus"] in ACTIVE
+        ]
+        if self.content_token:
+            await self.update_titles({row["nmId"] for row, _ in active})
+        return {
+            "orders": [normalize(key, row, status, self.titles.get(row["nmId"], ("", 0))[0])
+                       for row, status in active],
+            "covered_since": start.isoformat(),
+        }
+
+    async def update_titles(self, product_ids):
+        instant = monotonic()
+        if instant < self.content_retry_at:
+            return
+        missing = sorted(nm for nm in product_ids if self.titles.get(nm, ("", 0))[1] <= instant)
+        for nm in missing[:5]:
+            try:
+                response = await self.request("POST", "/content/v2/get/cards/list", content=True, json={
+                    "settings": {"cursor": {"limit": 100}, "filter": {"withPhoto": -1, "textSearch": str(nm)}},
+                })
+                title = next((card.get("title") or "" for card in response["cards"] if card["nmID"] == nm), "")
+            except (MarketplaceError, KeyError, TypeError, ValueError) as error:
+                self.content_retry_at = monotonic() + max(60, getattr(error, "retry_after", None) or 0)
+                log.warning("Не удалось получить названия товаров Wildberries")
+                return
+            self.titles[nm] = (str(title), monotonic() + (3600 if title else 600))
+
+    async def get_sticker(self, number):
+        order_id = int(number)
+        result = await self.request("POST", "/api/v3/orders/stickers", label=True,
+                                    params={"type": "png", "width": 58, "height": 40},
+                                    json={"orders": [order_id]})
+        sticker = next((row for row in result["stickers"] if row["orderId"] == order_id), None)
+        if not sticker:
+            raise MarketplaceError("label", True)
+        parts = (sticker["partA"], sticker["partB"])
+        if not all(isinstance(part, str) and re.fullmatch(r"[A-Za-z0-9-]{1,40}", part) for part in parts):
+            raise MarketplaceError("label")
+        try:
+            data = b64decode(sticker["file"], validate=True)
+        except (TypeError, ValueError) as error:
+            raise MarketplaceError("label") from error
+        if not data.startswith(b"\x89PNG\r\n\x1a\n") or len(data) > 8 * 1024 * 1024:
+            raise MarketplaceError("label")
+        return data, " ".join(parts)
+
+
+def normalize(key, row, status, title):
+    price = row.get("convertedPrice")
+    currency = row.get("convertedCurrencyCode")
+    currency = "₽" if currency == 643 else currency
+    return {
+        "account_key": key,
+        "posting_number": str(row["id"]),
+        "order_number": row.get("orderUid"),
+        "status": status,
+        "created_at": row["createdAt"],
+        "warehouse": str(row["warehouseId"]) if row.get("warehouseId") is not None else None,
+        "delivery_method": "FBS",
+        "supply_id": row.get("supplyId"),
+        "products": [{
+            "name": title,
+            "offer_id": row["article"],
+            "sku": str(row["nmId"]),
+            "quantity": 1,
+            "price": f"{Decimal(price) / 100:.2f} {currency or ''}".rstrip() if type(price) is int else None,
+        }],
+    }

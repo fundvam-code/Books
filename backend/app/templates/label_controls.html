@@ -15,7 +15,7 @@
   <form class="label-output" action="{{ order_path }}/label" method="post" target="_blank" rel="noopener">
     <input type="hidden" name="open_pdf" value="true">
     <input type="hidden" name="autoprint" value="true" disabled>
-    <label class="label-option"><input type="checkbox" name="with_title" value="true"> Печатать название книги на этикетке</label>
+    {% if book_title(order) %}<label class="label-option"><input type="checkbox" name="with_title" value="true"> Печатать название книги на этикетке</label>{% endif %}
     <button class="button {{ 'secondary' if return_account }}" type="submit"{% if label_job_id %} hidden{% endif %}>Печать этикетки</button>
   </form>
   <form action="{{ order_path }}/label-print/{{ 'unprinted' if printed else 'printed' }}" method="post">

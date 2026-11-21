@@ -10,8 +10,8 @@
   <h1>Активные отправления</h1>
   <span class="connection {{ 'online' if online else 'offline' }}">Агент {{ 'в сети' if online else 'не в сети' }}</span>
 </div>
-<nav class="tabs" aria-label="Кабинеты Ozon">
-  {% for key, title in [('all', 'Все кабинеты')] + (cabinet_names.items()|list) %}
+<nav class="tabs" aria-label="Кабинеты">
+  {% for key, title in tabs %}
   <a href="{{ orders_url(key, hide_printed) }}"{% if key == account %} aria-current="page"{% endif %}>{{ title }}</a>
   {% endfor %}
 </nav>
@@ -32,13 +32,9 @@
     <label><input id="hide-printed" type="checkbox" name="hide_printed" value="true"{% if hide_printed %} checked{% endif %}> Скрывать напечатанные</label>
     <noscript><button class="button secondary" type="submit">Применить</button></noscript>
   </form>
-  {% if has_assembled %}{% include "label_print_option.html" %}{% endif %}
+  {% if has_printable %}{% include "label_print_option.html" %}{% endif %}
 </div>
-<div class="board">
-  {% for title, orders in columns %}
-  <section class="lane">
-    <h2>{{ title }} <span class="count">{{ orders|length }}</span></h2>
-    {% if loop.last and has_assembled %}
+{% if has_printable %}
     <form class="batch-label-form label-output" action="/label-batches" method="post" target="_blank" rel="noopener">
       <input type="hidden" name="account" value="{{ account }}">
       <input type="hidden" name="autoprint" value="true" disabled>
@@ -46,9 +42,15 @@
       <label class="label-option"><input type="checkbox" name="with_title" value="true"> Печатать названия книг на этикетках</label>
       <button class="button" type="submit">Печатать все этикетки</button>
     </form>
-    {% endif %}
+{% endif %}
+{% for marketplace, columns in boards %}
+{% if boards|length > 1 %}<h2>{{ marketplace }}</h2>{% endif %}
+<div class="board{% if columns|length == 3 %} board-three{% endif %}">
+  {% for title, orders in columns %}
+  <section class="lane">
+    <h2>{{ title }} <span class="count">{{ orders|length }}</span></h2>
     {% for order, printed, label_job_id in orders %}
-    {% set number = label_number(label_job_id) %}
+    {% set number = label_number(label_job_id, order.account_key) %}
     <article class="card" data-order-label>
       <div class="card-title">
         <div>
@@ -66,7 +68,7 @@
         {% endfor %}
         {% if order.data.products|length > 3 %}<li>Ещё {{ order.data.products|length - 3 }}</li>{% endif %}
       </ul>
-      {% if order.status == 'awaiting_deliver' %}
+      {% if order.status in label_statuses %}
       {{ label_controls(order, printed, label_job_id, return_account=account, hide_printed=hide_printed) }}
       {% endif %}
     </article>
@@ -76,4 +78,5 @@
   </section>
   {% endfor %}
 </div>
+{% endfor %}
 {% endblock %}

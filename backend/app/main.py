@@ -17,6 +17,7 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
+from PIL import Image
 from pypdf import PdfReader, PdfWriter
 from pypdf.errors import PyPdfError
 from pypdfium2 import PdfiumError
@@ -24,17 +25,21 @@ from sqlalchemy import and_, delete, desc, select
 from sqlalchemy.dialects.postgresql import insert
 
 from .db import Cabinet, Heartbeat, Job, LabelBatch, LabelPrint, Order, PrintTask, Session
-from .jobs import ACCOUNTS, ACTIVE, PDF_LIMIT, STATUSES, apply_snapshot, claim, enqueue, fail_job, initialize, maintain, now
+from .jobs import (ACTIVE, LABEL_STATUSES, OZON_ACCOUNTS, OZON_STATUSES, PDF_LIMIT, WB_ACCOUNT, WB_STATUSES,
+                   apply_snapshot, claim, enqueue, fail_job, initialize, maintain, now)
 from .label_title import NoTitleSpace, add_title
 from .printing import PRINT_LEASE, batch_versions, batch_writer, claim_print, create_batch, queue_print
-from .schemas import Account, AgentHeartbeat, Completion, LabelTask, PrintResult
+from .schemas import Account, AccountFilter, AgentAccounts, AgentHeartbeat, Completion, LabelTask, PrintResult
+from .wb_label import sticker_pdf
 
 ROOT = Path(__file__).parent
 LABEL_DIR = Path(os.environ.get("LABEL_DIR", "/labels"))
 MSK = timezone(timedelta(hours=3), "MSK")
 templates = Jinja2Templates(directory=ROOT / "templates")
-templates.env.globals["cabinet_names"] = {"1": "Золотая антилопа", "2": "Зеленая книга"}
-labels = dict(zip(STATUSES, ("Ожидают сборки", "Собраны — ждут отгрузки")))
+cabinet_names = {"1": "Золотая антилопа", "2": "Зеленая книга", WB_ACCOUNT: "Wildberries"}
+templates.env.globals.update(cabinet_names=cabinet_names, label_statuses=LABEL_STATUSES)
+labels = dict(zip((*OZON_STATUSES, *WB_STATUSES),
+                  ("Ожидают сборки", "Собраны — ждут отгрузки", "Новые", "На сборке", "В доставке")))
 
 
 def format_msk(value: datetime | str | None) -> str:
@@ -131,13 +136,17 @@ def heartbeat(body: AgentHeartbeat, auth: Agent):
         db.execute(insert(Heartbeat).values(id=1, seen_at=stamp).on_conflict_do_update(
             index_elements=["id"], set_={"seen_at": stamp},
         ))
+        if WB_ACCOUNT in body.account_keys:
+            created = db.scalar(insert(Cabinet).values(key=WB_ACCOUNT).on_conflict_do_nothing().returning(Cabinet.key))
+            if created:
+                enqueue(db, "sync_orders", WB_ACCOUNT)
     return Response(status_code=204)
 
 
 @app.post("/api/agent/jobs/claim")
-def claim_job(auth: Agent):
+def claim_job(auth: Agent, body: AgentAccounts | None = None):
     with Session.begin() as db:
-        job = claim(db)
+        job = claim(db, body.account_keys if body else OZON_ACCOUNTS)
         if job is None:
             return Response(status_code=204)
         payload = {}
@@ -184,18 +193,21 @@ def complete_job(job_id: UUID, body: Completion, auth: Agent, token: Lease):
 def save_label_task(job_id: UUID, body: LabelTask, auth: Agent, token: Lease):
     with Session.begin() as db:
         job = locked_job(db, job_id, token)
-        if job.kind != "label_pdf" or job.ozon_task_id not in (None, body.ozon_task_id):
+        if (job.kind != "label_pdf" or job.account_key == WB_ACCOUNT
+                or job.ozon_task_id not in (None, body.ozon_task_id)):
             raise HTTPException(409, "Идентификатор задания уже закреплён")
         job.ozon_task_id = body.ozon_task_id
     return Response(status_code=204)
 
 
-def publish_pdf(job_id, token, data):
+def publish_pdf(job_id, token, data, *, wb=False):
     with Session.begin() as db:
         job = locked_job(db, job_id, token, allow_ready=True)
+        if job.kind != "label_pdf" or wb != (job.account_key == WB_ACCOUNT):
+            raise HTTPException(409, "Тип этикетки не соответствует заданию")
         if job.state == "ready":
             return
-        if job.kind != "label_pdf" or job.ozon_task_id is None:
+        if not wb and job.ozon_task_id is None:
             raise HTTPException(409, "Задание генерации не зарегистрировано")
         temporary = LABEL_DIR / f".{job.id}.{token}.tmp"
         try:
@@ -208,18 +220,36 @@ def publish_pdf(job_id, token, data):
         job.lease_until = None
 
 
-@app.put("/api/agent/jobs/{job_id}/label", status_code=204)
-async def upload_pdf(job_id: UUID, request: Request, auth: Agent, token: Lease):
-    if request.headers.get("content-type") != "application/pdf":
-        raise HTTPException(415, "Ожидался PDF")
+async def read_label_upload(request, content_type):
+    if request.headers.get("content-type") != content_type:
+        raise HTTPException(415, "Неподдерживаемый формат этикетки")
     data = bytearray()
     async for chunk in request.stream():
         if len(data) + len(chunk) > PDF_LIMIT:
-            raise HTTPException(413, "PDF превышает 8 МБ")
+            raise HTTPException(413, "Файл этикетки превышает 8 МБ")
         data.extend(chunk)
+    return data
+
+
+@app.put("/api/agent/jobs/{job_id}/label", status_code=204)
+async def upload_pdf(job_id: UUID, request: Request, auth: Agent, token: Lease):
+    data = await read_label_upload(request, "application/pdf")
     if not data.startswith(b"%PDF-") or b"%%EOF" not in data[-2048:]:
         raise HTTPException(422, "Некорректный PDF")
     await asyncio.to_thread(publish_pdf, job_id, token, data)
+    return Response(status_code=204)
+
+
+@app.put("/api/agent/jobs/{job_id}/wb-sticker", status_code=204)
+async def upload_wb_sticker(job_id: UUID, request: Request, auth: Agent, token: Lease,
+                            number: Annotated[str, Header(alias="X-Label-Number",
+                                                          pattern=r"^[A-Za-z0-9-]{1,40} [A-Za-z0-9-]{1,40}$")]):
+    png = await read_label_upload(request, "image/png")
+    try:
+        data = await asyncio.to_thread(sticker_pdf, png, number)
+    except (OSError, ValueError, Image.DecompressionBombError) as error:
+        raise HTTPException(422, "Некорректный PNG стикера Wildberries") from error
+    await asyncio.to_thread(publish_pdf, job_id, token, data, wb=True)
     return Response(status_code=204)
 
 
@@ -251,14 +281,17 @@ def pdf_is_available(job_id):
 
 
 @lru_cache(maxsize=512)
-def label_number(job_id: UUID | None) -> str | None:
+def label_number(job_id: UUID | None, account_key: str) -> str | None:
     if job_id is None:
         return None
     try:
         with (LABEL_DIR / f"{job_id}.pdf").open("rb") as source:
+            reader = PdfReader(source)
+            if account_key == WB_ACCOUNT:
+                return reader.metadata.title if reader.metadata else None
             numbers = (
                 f"{prefix} {suffix}"
-                for page in PdfReader(source).pages
+                for page in reader.pages
                 for prefix, suffix in re.findall(r"(?mi)^\s*(ii[0-9]{7})\s+([0-9]{4})[ \t]*$", page.extract_text())
             )
             return ", ".join(dict.fromkeys(numbers)) or None
@@ -275,6 +308,9 @@ def book_title(order):
     return ", ".join(dict.fromkeys(name for name in (" ".join(text.split()) for text in names) if name))
 
 
+templates.env.globals["book_title"] = book_title
+
+
 def get_or_enqueue_label(db, order):
     job_id = db.scalar(ready_label_id(order.account_key, order.posting_number))
     if pdf_is_available(job_id):
@@ -288,26 +324,31 @@ def get_or_enqueue_label(db, order):
 
 @app.get("/orders")
 def orders(request: Request, account: str = "all", hide_printed: bool = False):
-    if account not in ("all", *ACCOUNTS):
-        raise HTTPException(404, "Кабинет не найден")
-    keys = ACCOUNTS if account == "all" else (account,)
     with Session() as db:
-        cabinets = list(db.scalars(select(Cabinet).where(Cabinet.key.in_(keys)).order_by(Cabinet.key)))
+        registered = {cabinet.key: cabinet for cabinet in db.scalars(select(Cabinet).order_by(Cabinet.key))}
+        if account != "all" and account not in registered:
+            raise HTTPException(404, "Кабинет не найден")
+        keys = tuple(registered) if account == "all" else (account,)
+        cabinets = [registered[key] for key in keys]
         seen = db.get(Heartbeat, 1)
         query = orders_with_labels().where(Order.account_key.in_(keys))
         if hide_printed:
             query = query.where(LabelPrint.posting_number.is_(None))
         records = db.execute(query).all()
     records.sort(key=lambda row: (row[0].data.get("shipment_date") or "~", row[0].posting_number))
-    columns = [
-        (labels[status], [(order, printed, job_id if pdf_is_available(job_id) else None)
-                         for order, printed, job_id in records if order.status == status])
-        for status in STATUSES
-    ]
+    orders_by_status = {status: [] for status in labels}
+    for order, printed, job_id in records:
+        orders_by_status[order.status].append((order, printed, job_id if pdf_is_available(job_id) else None))
+    boards = []
+    if any(key in OZON_ACCOUNTS for key in keys):
+        boards.append(("Ozon", [(labels[status], orders_by_status[status]) for status in OZON_STATUSES]))
+    if WB_ACCOUNT in keys:
+        boards.append(("Wildberries", [(labels[status], orders_by_status[status]) for status in WB_STATUSES]))
     return templates.TemplateResponse(request, "orders.html", {
-        "account": account, "cabinets": cabinets, "columns": columns,
+        "account": account, "cabinets": cabinets, "boards": boards,
+        "tabs": [("all", "Все кабинеты"), *((key, cabinet_names[key]) for key in registered)],
         "hide_printed": hide_printed,
-        "has_assembled": any(order.status == "awaiting_deliver" for order, _, _ in records),
+        "has_printable": any(orders_by_status[status] for status in LABEL_STATUSES),
         "online": bool(seen and seen.seen_at >= now() - timedelta(seconds=120)),
     })
 
@@ -377,7 +418,7 @@ def download_print_pdf(task_id: UUID, auth: Agent, token: Lease):
             task.lease_until = None
             task.error = "Не удалось подготовить PDF. Проверьте наличие этикеток и настройку названия книги."
             return JSONResponse({"detail": task.error}, status_code=409)
-    return inline_pdf(data, "ozon-labels.pdf")
+    return inline_pdf(data, "labels.pdf")
 
 
 @app.post("/api/agent/print-queue/{task_id}/start", status_code=204)
@@ -419,13 +460,13 @@ def print_job_status(request: Request, task_id: UUID):
 @app.post("/orders/{account_key}/{posting_number}/label-print/{state}")
 def mark_label_print(request: Request, account_key: Account, posting_number: str,
                      state: Literal["printed", "unprinted"],
-                     return_account: Annotated[Literal["all", "1", "2"] | None, Form()] = None,
+                     return_account: Annotated[AccountFilter | None, Form()] = None,
                      hide_printed: Annotated[bool, Form()] = False):
     require_dashboard_origin(request)
     with Session.begin() as db:
         order = db.get(Order, (account_key, posting_number), with_for_update=True)
-        if order is None or order.status != "awaiting_deliver":
-            raise HTTPException(409, "Отметка о печати доступна для собранного отправления")
+        if order is None or order.status not in LABEL_STATUSES:
+            raise HTTPException(409, "Отметка о печати доступна после начала работы с этикеткой")
         if state == "printed":
             db.execute(insert(LabelPrint).values(
                 account_key=account_key, posting_number=posting_number,
@@ -448,8 +489,8 @@ def request_label(request: Request, account_key: Account, posting_number: str,
     require_dashboard_origin(request)
     with Session.begin() as db:
         order = db.get(Order, (account_key, posting_number), with_for_update=True)
-        if order is None or order.status != "awaiting_deliver":
-            raise HTTPException(409, "Этикетка доступна для собранного отправления")
+        if order is None or order.status not in LABEL_STATUSES:
+            raise HTTPException(409, "Этикетка недоступна на текущем этапе")
         job_id, ready = get_or_enqueue_label(db, order)
         if autoprint and request.headers.get("accept") != "application/json":
             task_id = queue_print(db, account_key, [
@@ -465,15 +506,14 @@ def request_label(request: Request, account_key: Account, posting_number: str,
 
 
 @app.post("/label-batches")
-def request_label_batch(request: Request, account: Annotated[Literal["all", "1", "2"], Form()] = "all",
+def request_label_batch(request: Request, account: Annotated[AccountFilter, Form()] = "all",
                         with_title: Annotated[bool, Form()] = False, autoprint: Annotated[bool, Form()] = False,
                         hide_printed: Annotated[bool, Form()] = False):
     require_dashboard_origin(request)
-    keys = ACCOUNTS if account == "all" else (account,)
     with Session.begin() as db:
-        query = select(Order).where(
-            Order.account_key.in_(keys), Order.status == "awaiting_deliver",
-        )
+        query = select(Order).where(Order.status.in_(LABEL_STATUSES))
+        if account != "all":
+            query = query.where(Order.account_key == account)
         if hide_printed:
             printed = select(LabelPrint.posting_number).where(
                 LabelPrint.account_key == Order.account_key, LabelPrint.posting_number == Order.posting_number,
@@ -481,7 +521,7 @@ def request_label_batch(request: Request, account: Annotated[Literal["all", "1",
             query = query.where(~printed)
         orders = db.scalars(query.order_by(Order.account_key, Order.posting_number).with_for_update()).all()
         if not orders:
-            raise HTTPException(409, "Нет собранных отправлений для печати")
+            raise HTTPException(409, "Нет отправлений с доступными этикетками")
         items = []
         for order in orders:
             job_id, _ = get_or_enqueue_label(db, order)
@@ -514,7 +554,7 @@ def label_batch(request: Request, batch_id: UUID, originals: bool = False, autop
         context["merge_error"] = True
         context["can_open_originals"] = not originals and any(item["title"] for item in batch.labels)
         return templates.TemplateResponse(request, "label_batch.html", context, status_code=409)
-    return inline_pdf(data, "ozon-labels.pdf")
+    return inline_pdf(data, "labels.pdf")
 
 
 @app.get("/labels/{job_id}")
@@ -531,7 +571,7 @@ def label_status(request: Request, job_id: UUID, with_title: bool = False, autop
         return {
             "state": state, "error": job.error,
             "pdf_url": f"/labels/{job_id}/pdf" if state == "ready" else None,
-            "label_number": label_number(job_id) if state == "ready" else None,
+            "label_number": label_number(job_id, job.account_key) if state == "ready" else None,
         }
     pdf_url = label_url(f"/labels/{job_id}/pdf", with_title=with_title, autoprint=autoprint)
     if state == "ready" and (autoprint or open_pdf):
@@ -550,7 +590,8 @@ def label_pdf(request: Request, job_id: UUID, with_title: bool = False, autoprin
     path = LABEL_DIR / f"{job_id}.pdf"
     if not job or job.kind != "label_pdf" or job.state != "ready" or job.label_until <= now() or not path.is_file():
         raise HTTPException(404, "Этикетка недоступна")
-    filename = f"ozon-{job.posting_number}.pdf"
+    marketplace = "wb" if job.account_key == WB_ACCOUNT else "ozon"
+    filename = f"{marketplace}-{job.posting_number}.pdf"
     if not with_title:
         return FileResponse(path, media_type="application/pdf", filename=filename, content_disposition_type="inline")
 

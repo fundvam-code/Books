@@ -9,7 +9,7 @@ log = logging.getLogger("agent")
 
 
 def submit_pdf(pdf, printer, task_id):
-    args = [LP, "-n", "1", "-o", "print-scaling=none", "-t", f"Ozon labels {task_id}"]
+    args = [LP, "-n", "1", "-o", "print-scaling=none", "-t", f"FBS labels {task_id}"]
     if printer != "default":
         args.extend(("-d", printer))
     try:

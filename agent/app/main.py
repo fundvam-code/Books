@@ -6,8 +6,10 @@ from datetime import UTC, datetime
 
 import httpx
 
-from .ozon import Ozon, OzonError
+from .errors import MarketplaceError
+from .ozon import Ozon
 from .printing import LP, print_worker
+from .wildberries import ACCOUNT as WB_ACCOUNT, Wildberries
 
 log = logging.getLogger("agent")
 
@@ -49,32 +51,44 @@ async def renew(server, job, worker):
 
 
 async def process(server, job, profiles):
-    ozon = profiles.get(job["account_key"])
+    account = job["account_key"]
+    marketplace = profiles.get(account)
     payload = job["payload"]
     try:
-        if ozon is None:
-            raise OzonError("profile")
+        if marketplace is None:
+            raise MarketplaceError("profile")
         if job["kind"] == "sync_orders":
-            result = await ozon.snapshot(job["account_key"], payload["known_postings"])
+            result = await marketplace.snapshot(account, payload["known_postings"])
             await server.request("POST", "complete", job=job, json={"status": "succeeded", "result": result})
+            return
+
+        if account == WB_ACCOUNT:
+            data, number = await marketplace.get_sticker(payload["posting_number"])
+            try:
+                await server.request("PUT", "wb-sticker", job=job, content=data,
+                                     headers={"Content-Type": "image/png", "X-Label-Number": number})
+            except httpx.HTTPStatusError as error:
+                if error.response.status_code not in (413, 415, 422):
+                    raise
+                raise MarketplaceError("label") from error
             return
 
         task_id = payload["ozon_task_id"]
         if task_id is None:
-            task_id = await ozon.create_label(payload["posting_number"])
+            task_id = await marketplace.create_label(payload["posting_number"])
             await server.request("PUT", "label-task", job=job, json={"ozon_task_id": task_id})
         for _ in range(12):
-            url = await ozon.get_label_url(task_id)
+            url = await marketplace.get_label_url(task_id)
             if url:
-                data = await ozon.fetch_pdf(url)
+                data = await marketplace.fetch_pdf(url)
                 await server.request("PUT", "label", job=job, content=data,
                                      headers={"Content-Type": "application/pdf"})
                 return
             await asyncio.sleep(5)
-        raise OzonError("label", True)
+        raise MarketplaceError("label", True)
     except (KeyError, TypeError, ValueError):
-        error = OzonError("response")
-    except OzonError as failure:
+        error = MarketplaceError("response")
+    except MarketplaceError as failure:
         error = failure
     await server.request("POST", "complete", job=job, json={
         "status": "retryable_error" if error.retry else "permanent_error",
@@ -94,12 +108,15 @@ async def run():
             for key in ("1", "2")}
     async with (
         httpx.AsyncClient(base_url=url, headers={"Authorization": f"Bearer {secret}"}, timeout=15, trust_env=False) as api,
-        httpx.AsyncClient(timeout=20, trust_env=False) as ozon,
+        httpx.AsyncClient(timeout=20, trust_env=False) as marketplace,
     ):
-        profiles = {key: Ozon(ozon, client_id, api_key) for key, (client_id, api_key) in keys.items()
+        profiles = {key: Ozon(marketplace, client_id, api_key) for key, (client_id, api_key) in keys.items()
                     if client_id and api_key}
+        wb_token = os.environ.get("WB_API_TOKEN", "").strip()
+        if wb_token:
+            profiles[WB_ACCOUNT] = Wildberries(marketplace, wb_token, os.environ.get("WB_CONTENT_TOKEN", "").strip())
         if not profiles:
-            raise SystemExit("Настройте ключ хотя бы одного кабинета Ozon")
+            raise SystemExit("Настройте ключ хотя бы одного кабинета Ozon или Wildberries")
         server = Server(api)
         async with asyncio.TaskGroup() as group:
             group.create_task(heartbeat(server, profiles))
@@ -108,7 +125,7 @@ async def run():
             delay = 2
             while True:
                 try:
-                    job = await server.request("POST", "/jobs/claim")
+                    job = await server.request("POST", "/jobs/claim", json={"account_keys": list(profiles)})
                     delay = 2
                     if job is None:
                         await asyncio.sleep(delay)

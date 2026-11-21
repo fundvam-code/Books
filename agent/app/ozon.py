@@ -1,18 +1,12 @@
-from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 
 import httpx
 
+from .errors import MarketplaceError as OzonError
+
 ORIGIN = "https://api-seller.ozon.ru"
 ACTIVE = ("awaiting_packaging", "awaiting_deliver")
 PDF_LIMIT = 8 * 1024 * 1024
-
-
-@dataclass
-class OzonError(Exception):
-    code: str
-    retry: bool = False
-    retry_after: int | None = None
 
 
 class Ozon:

@@ -8,7 +8,7 @@
 {% block content %}
 <a class="back" href="/orders?account={{ order.account_key }}">← К отправлениям</a>
 <div data-order-label>
-{% set number = label_number(label_job_id) %}
+{% set number = label_number(label_job_id, order.account_key) %}
 <div class="heading">
   <div>
     <h1>{{ order.posting_number }}</h1>
@@ -20,12 +20,13 @@
   <dl class="details">
     <div><dt>Кабинет</dt><dd>{{ cabinet_names[order.account_key] }}</dd></div>
     <div><dt>Номер заказа</dt><dd>{{ data.order_number or '—' }}</dd></div>
+    {% if data.supply_id %}<div><dt>Поставка</dt><dd>{{ data.supply_id }}</dd></div>{% endif %}
     <div><dt>Начало обработки</dt><dd>{{ data.created_at|msk }}</dd></div>
     <div><dt>Срок отгрузки</dt><dd>{{ data.shipment_date|msk }}</dd></div>
     <div><dt>Склад</dt><dd>{{ data.warehouse or '—' }}</dd></div>
     <div><dt>Способ доставки</dt><dd>{{ data.delivery_method or '—' }}</dd></div>
   </dl>
-  {% if order.status == 'awaiting_deliver' %}
+  {% if order.status in label_statuses %}
   {% include "label_print_option.html" %}
   {{ label_controls(order, printed, label_job_id) }}
   {% endif %}

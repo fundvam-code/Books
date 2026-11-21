@@ -4,8 +4,9 @@ from typing import Literal
 from pydantic import BaseModel, Field, field_validator
 
 
-Account = Literal["1", "2"]
-Status = Literal["awaiting_packaging", "awaiting_deliver"]
+Account = Literal["1", "2", "w"]
+AccountFilter = Literal["all", "1", "2", "w"]
+Status = Literal["awaiting_packaging", "awaiting_deliver", "wb_new", "wb_confirm", "wb_complete"]
 
 
 class Product(BaseModel):
@@ -26,6 +27,7 @@ class Posting(BaseModel):
     products: list[Product]
     warehouse: str | None = None
     delivery_method: str | None = None
+    supply_id: str | None = None
 
     @field_validator("created_at", "shipment_date")
     @classmethod
@@ -57,7 +59,10 @@ class PrintResult(BaseModel):
     status: Literal["submitted", "failed", "unknown"]
 
 
-class AgentHeartbeat(BaseModel):
+class AgentAccounts(BaseModel):
+    account_keys: list[Account] = Field(min_length=1, max_length=3)
+
+
+class AgentHeartbeat(AgentAccounts):
     agent_version: str = Field(max_length=30)
-    account_keys: list[Account] = Field(max_length=2)
     observed_at: datetime
