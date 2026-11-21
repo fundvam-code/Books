@@ -1,4 +1,33 @@
 const printImmediately = document.getElementById("print-immediately");
+const titleOptions = document.querySelectorAll('.label-output input[name="with_title"]');
+const { autoRefreshTitles, ...historyState } = history.state ?? {};
+
+if (autoRefreshTitles) {
+    const checkedForms = new Set(autoRefreshTitles);
+    for (const option of titleOptions) {
+        option.checked = checkedForms.has(option.form.action);
+    }
+    history.replaceState(historyState, "");
+}
+
+let refreshTimer;
+function refreshLabelPage() {
+    clearTimeout(refreshTimer);
+    if (document.querySelector(".label-load button:disabled")) {
+        refreshTimer = setTimeout(refreshLabelPage, 2000);
+        return;
+    }
+
+    const checkedForms = Array.from(titleOptions)
+        .filter((option) => option.checked)
+        .map((option) => option.form.action);
+    history.replaceState({ ...history.state, autoRefreshTitles: checkedForms }, "");
+    window.location.reload();
+}
+
+window.addEventListener("storage", (event) => {
+    if (event.key === "fbs-print-submission" && event.newValue) refreshLabelPage();
+});
 
 if (printImmediately) {
     const preferenceKey = "ozon-label-print-immediately";

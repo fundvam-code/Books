@@ -11,8 +11,8 @@ from pypdf.errors import PyPdfError
 from sqlalchemy import and_, or_, select
 from sqlalchemy.dialects.postgresql import insert
 
-from .db import Job, LabelBatch, Order, PrintLog, PrintTask, Session
-from .jobs import ACTIVE, WB_ACCOUNT, now
+from .db import Cabinet, Job, LabelBatch, LabelPrint, Order, PrintLog, PrintTask, Session
+from .jobs import ACTIVE, LABEL_STATUSES, REASSIGNED_LABEL_ERROR, WB_ACCOUNT, now
 from .label_title import add_title
 
 PRINT_LEASE = timedelta(minutes=2)
@@ -101,6 +101,19 @@ def record_print(db, task, batch, label_dir, submitted_at=None):
     ]
     if rows:
         db.execute(insert(PrintLog).on_conflict_do_nothing(), rows)
+
+
+def mark_submitted_labels(db, task_id):
+    # Serialize with order synchronization so a replaced WB sticker cannot mark its successor.
+    accounts = select(PrintLog.account_key).where(PrintLog.task_id == task_id)
+    db.execute(select(Cabinet.key).where(Cabinet.key.in_(accounts)).order_by(Cabinet.key).with_for_update()).all()
+    printed = select(Order.account_key, Order.posting_number).join(
+        PrintLog, and_(PrintLog.account_key == Order.account_key, PrintLog.posting_number == Order.posting_number),
+    ).join(Job, Job.id == PrintLog.label_job_id).where(
+        PrintLog.task_id == task_id, Order.status.in_(LABEL_STATUSES),
+        Job.error.is_distinct_from(REASSIGNED_LABEL_ERROR),
+    ).distinct()
+    db.execute(insert(LabelPrint).from_select(["account_key", "posting_number"], printed).on_conflict_do_nothing())
 
 
 def backfill_print_log(label_dir):

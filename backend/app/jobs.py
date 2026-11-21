@@ -13,6 +13,7 @@ OZON_STATUSES = ("awaiting_packaging", "awaiting_deliver")
 WB_BOARD_STATUSES = ("wb_new", "wb_confirm")
 WB_STATUSES = (*WB_BOARD_STATUSES, "wb_complete")
 LABEL_STATUSES = ("awaiting_deliver", "wb_confirm")
+REASSIGNED_LABEL_ERROR = "Поставка WB изменилась. Загрузите актуальную этикетку."
 PDF_LIMIT = 8 * 1024 * 1024
 ERRORS = {
     "access": "{marketplace} отклонил доступ. Проверьте ключ и его права.",
@@ -100,6 +101,7 @@ def apply_snapshot(db, key, result):
         row.account_key != key or row.status not in allowed for row in rows.values()
     ):
         raise ValueError("Несогласованный снимок")
+    cabinet = db.get(Cabinet, key, with_for_update=True)
     if key == WB_ACCOUNT:
         discard_reassigned_stickers(db, rows)
     db.execute(delete(Order).where(Order.account_key == key))
@@ -107,7 +109,6 @@ def apply_snapshot(db, key, result):
         account_key=key, posting_number=row.posting_number,
         status=row.status, data=row.model_dump(mode="json"),
     ) for row in rows.values())
-    cabinet = db.get(Cabinet, key)
     cabinet.updated_at = now()
     cabinet.error = catalog_error(result) if key == WB_ACCOUNT else None
 
@@ -142,9 +143,11 @@ def discard_reassigned_stickers(db, rows):
     if changed:
         filters = (Job.account_key == WB_ACCOUNT, Job.kind == "label_pdf", Job.posting_number.in_(changed))
         db.execute(update(Job).where(*filters, Job.state.in_(ACTIVE)).values(
-            state="failed", lease_until=None, error="Поставка WB изменилась. Загрузите актуальную этикетку.",
+            state="failed", lease_until=None, error=REASSIGNED_LABEL_ERROR,
         ))
-        db.execute(update(Job).where(*filters, Job.state == "ready").values(label_until=now()))
+        db.execute(update(Job).where(*filters, Job.state == "ready").values(
+            label_until=now(), error=REASSIGNED_LABEL_ERROR,
+        ))
         db.execute(delete(LabelPrint).where(LabelPrint.account_key == WB_ACCOUNT, LabelPrint.posting_number.in_(changed)))
 
 

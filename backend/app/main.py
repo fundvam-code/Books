@@ -27,7 +27,8 @@ from .jobs import (ACTIVE, LABEL_STATUSES, OZON_ACCOUNTS, OZON_STATUSES, PDF_LIM
                    apply_snapshot, claim, enqueue, fail_job, initialize, maintain, now)
 from .label_title import NoTitleSpace, add_title
 from .printing import (PRINT_LEASE, backfill_print_log, batch_item, batch_versions, batch_writer, book_title,
-                       claim_print, create_batch, label_metadata, pdf_label_number, queue_print, record_print)
+                       claim_print, create_batch, label_metadata, mark_submitted_labels, pdf_label_number,
+                       queue_print, record_print)
 from .schemas import Account, AccountFilter, AgentAccounts, AgentHeartbeat, Completion, LabelTask, PrintResult
 from .wb_label import sticker_pdf
 
@@ -441,6 +442,7 @@ def finish_print(task_id: UUID, body: PrintResult, auth: Agent, token: Lease):
             task.error = "Принтер не принял задание. Проверьте выбранную очередь macOS."
         elif body.status == "submitted":
             record_print(db, task, db.get(LabelBatch, task.batch_id), LABEL_DIR, submitted_at=now())
+            mark_submitted_labels(db, task.id)
     return Response(status_code=204)
 
 
