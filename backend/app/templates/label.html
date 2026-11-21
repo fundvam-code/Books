@@ -9,11 +9,15 @@
 <section class="panel" aria-live="polite">
   {% if state == 'ready' %}
     <h2>Этикетка готова</h2>
-    <a class="button" href="/labels/{{ job.id }}/pdf" target="_blank" rel="noopener">Открыть PDF для печати</a>
+    {% if title_error %}<p class="error">{{ title_error }}</p>{% endif %}
+    <a class="button" href="{{ pdf_url }}">{{ 'Открыть оригинальный PDF' if title_error else 'Открыть PDF для печати' }}</a>
   {% elif state == 'failed' %}
     <h2>Не удалось получить этикетку</h2>
     <p>{{ job.error }}</p>
     <form action="/orders/{{ job.account_key }}/{{ job.posting_number }}/label" method="post">
+      {% if with_title %}<input type="hidden" name="with_title" value="true">{% endif %}
+      {% if autoprint %}<input type="hidden" name="autoprint" value="true">{% endif %}
+      {% if open_pdf %}<input type="hidden" name="open_pdf" value="true">{% endif %}
       <button class="button" type="submit">Повторить</button>
     </form>
   {% elif state == 'expired' %}
@@ -22,7 +26,7 @@
   {% else %}
     <h2>Ожидаем этикетку</h2>
     {% if job.error %}<p>{{ job.error }} Агент повторит запрос.</p>{% endif %}
-    <a href="/labels/{{ job.id }}">Обновить состояние</a>
+    <a href="{{ status_url }}">Обновить состояние</a>
   {% endif %}
 </section>
 {% endblock %}

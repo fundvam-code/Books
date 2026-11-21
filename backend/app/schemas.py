@@ -53,6 +53,10 @@ class LabelTask(BaseModel):
     ozon_task_id: int = Field(gt=0, le=9223372036854775807)
 
 
+class PrintResult(BaseModel):
+    status: Literal["submitted", "failed", "unknown"]
+
+
 class AgentHeartbeat(BaseModel):
     agent_version: str = Field(max_length=30)
     account_keys: list[Account] = Field(max_length=2)

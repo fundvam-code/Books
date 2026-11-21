@@ -1,11 +1,13 @@
 import asyncio
 import logging
 import os
+import sys
 from datetime import UTC, datetime
 
 import httpx
 
 from .ozon import Ozon, OzonError
+from .printing import LP, print_worker
 
 log = logging.getLogger("agent")
 
@@ -85,6 +87,9 @@ async def run():
     secret = os.environ.get("AGENT_SHARED_SECRET", "")
     if url.scheme != "https" or not url.host or url.userinfo or url.path != "/" or url.query or url.fragment or len(secret) < 32:
         raise SystemExit("Укажите HTTPS-адрес дашборда и секрет агента длиной от 32 символов")
+    printer = os.environ.get("OZON_PRINTER", "").strip()
+    if printer and (sys.platform != "darwin" or not os.access(LP, os.X_OK)):
+        raise SystemExit("Для печати запустите агент нативно на macOS")
     keys = {key: (os.environ.get(f"OZON_CLIENT_ID_{key}"), os.environ.get(f"OZON_API_KEY_{key}"))
             for key in ("1", "2")}
     async with (
@@ -98,6 +103,8 @@ async def run():
         server = Server(api)
         async with asyncio.TaskGroup() as group:
             group.create_task(heartbeat(server, profiles))
+            if printer:
+                group.create_task(print_worker(server, printer))
             delay = 2
             while True:
                 try:

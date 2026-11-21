@@ -1,8 +1,24 @@
+{
+    default_sni {$PUBLIC_DOMAIN}
+}
+
+(dashboard_tls_default) {
+}
+
+(dashboard_tls_ip) {
+    tls {
+        issuer acme {
+            profile shortlived
+        }
+    }
+}
+
 {$PUBLIC_DOMAIN} {
+    import dashboard_tls_{$DASHBOARD_TLS_MODE:default}
     header {
         Cache-Control "no-store"
         X-Content-Type-Options "nosniff"
-        Referrer-Policy "no-referrer"
+        Referrer-Policy "same-origin"
     }
     handle /api/agent/* {
         reverse_proxy dashboard:8000

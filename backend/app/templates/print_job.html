@@ -1,0 +1,26 @@
+{% extends "base.html" %}
+{% block title %}Печать через агент{% endblock %}
+{% block head %}
+{% if state in ('pending', 'leased', 'sending') and not failures %}
+<script src="/static/label.js" defer></script>
+{% endif %}
+{% endblock %}
+{% block content %}
+<a class="back" href="{{ orders_url(batch.account) }}">← К отправлениям</a>
+<div class="heading"><h1>Печать через агент</h1></div>
+<section class="panel" aria-live="polite">
+  {% if state == 'submitted' %}
+    <p>PDF передан в очередь принтера на MacBook.</p>
+  {% elif state == 'unknown' %}
+    <p>Агент не подтвердил отправку. Проверьте очередь принтера перед повторной печатью.</p>
+  {% elif state == 'failed' or failures %}
+    <p>{{ task.error or failures[0][1] }}</p>
+  {% elif pending %}
+    <p>Готово {{ ready }} из {{ batch.labels|length }}. Агент отправит PDF на печать после загрузки всех этикеток.</p>
+  {% elif state in ('leased', 'sending') %}
+    <p>Агент отправляет PDF в очередь принтера.</p>
+  {% else %}
+    <p>PDF готов. Ожидаем агент с настроенным принтером.</p>
+  {% endif %}
+</section>
+{% endblock %}

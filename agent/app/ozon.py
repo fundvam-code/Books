@@ -95,11 +95,18 @@ class Ozon:
 
     async def get_label_url(self, task_id):
         reply = await self.post("/v2/posting/fbs/package-label/get", {"task_id": task_id}, label=True)
-        if reply["status"] in ("pending", "in_progress"):
+        status = reply.get("status")
+        details = status if isinstance(status, dict) else reply
+        code = details.get("code") if isinstance(status, dict) else status
+        if code in ("pending", "in_progress"):
             return None
-        if reply["status"] != "completed" or not reply.get("file_url"):
+        file_url = reply.get("file_url")
+        if (
+            code != "completed" or not isinstance(file_url, str) or not file_url
+            or details.get("unprinted_postings") or details.get("printed_postings_count") == 0
+        ):
             raise OzonError("label")
-        return reply["file_url"]
+        return file_url
 
     async def fetch_pdf(self, url):
         target = httpx.URL(url)

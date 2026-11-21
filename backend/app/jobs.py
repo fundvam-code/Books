@@ -1,10 +1,10 @@
 from datetime import UTC, datetime, timedelta
 from uuid import uuid4
 
-from sqlalchemy import delete, or_, select, text
+from sqlalchemy import delete, or_, select, text, update
 from sqlalchemy.dialects.postgresql import insert
 
-from .db import Base, Cabinet, Job, Order, Session, engine
+from .db import Base, Cabinet, Job, LabelBatch, Order, PrintTask, Session, engine
 
 ACCOUNTS = ("1", "2")
 ACTIVE = ("pending", "leased")
@@ -43,6 +43,9 @@ def enqueue(db, kind, key, posting=""):
 
 def maintain(label_dir):
     with Session.begin() as db:
+        db.execute(update(PrintTask).where(PrintTask.state == "sending", PrintTask.lease_until <= now())
+                   .values(state="unknown", lease_until=None))
+        db.execute(delete(LabelBatch).where(LabelBatch.expires_at <= now()))
         for key in ACCOUNTS:
             enqueue(db, "sync_orders", key)
         db.execute(delete(Job).where(

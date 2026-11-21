@@ -43,6 +43,18 @@ h2 { font-size: 1.1rem; margin: 0 0 1rem; }
 .products strong { white-space: nowrap; }
 .button { display: inline-block; font: inherit; font-size: .9rem; border: 1px solid var(--accent); border-radius: .45rem; padding: .4rem .75rem; color: #fff; background: var(--accent); text-decoration: none; cursor: pointer; }
 .button.secondary { color: #1a4b8d; border-color: #b5c8e2; background: #f1f6ff; }
+.label-status, .label-actions { display: flex; flex-wrap: wrap; gap: .4rem; }
+.label-status { margin-bottom: .5rem; }
+.label-number { color: var(--muted); font-weight: 400; font-size: .84rem; }
+.label-output button[hidden] { display: none; }
+.label-load button, a.label-link { border: 0; cursor: pointer; text-decoration: underline; text-underline-offset: .15em; }
+.label-load button:disabled { cursor: wait; text-decoration: none; }
+.label-load .error { font-size: .83rem; }
+.label-option { display: block; margin-bottom: .4rem; font-size: .9rem; }
+.batch-label-form { margin-bottom: 1rem; }
+.orders-filter { display: flex; flex-wrap: wrap; gap: .4rem 1.2rem; margin-bottom: 1rem; }
+.print-option { display: inline-block; margin-bottom: .4rem; }
+.orders-filter .print-option { margin-bottom: 0; }
 .details { display: grid; grid-template-columns: repeat(auto-fit, minmax(11rem, 1fr)); gap: .8rem; margin: 0 0 1rem; }
 dt { color: var(--muted); font-size: .85rem; }
 dd { margin: 0; overflow-wrap: anywhere; }

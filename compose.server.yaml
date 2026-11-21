@@ -28,15 +28,17 @@ services:
     volumes:
       - labels:/labels
     healthcheck:
-      test: ["CMD", "python", "-c", "from urllib.request import urlopen; urlopen('http://localhost:8000/health', timeout=3)"]
+      test: ["CMD", "python", "-c", "from urllib.request import urlopen; urlopen('http://127.0.0.1:8000/health', timeout=3)"]
       interval: 15s
-      timeout: 5s
+      timeout: 10s
+      start_period: 30s
       retries: 4
     restart: unless-stopped
   caddy:
     image: caddy:2-alpine
     environment:
       PUBLIC_DOMAIN: ${PUBLIC_DOMAIN:?Укажите домен}
+      DASHBOARD_TLS_MODE: ${DASHBOARD_TLS_MODE:-default}
       DASHBOARD_USERNAME: ${DASHBOARD_USERNAME:?Укажите имя пользователя}
       DASHBOARD_PASSWORD_HASH: ${DASHBOARD_PASSWORD_HASH:?Укажите хеш пароля}
     ports:

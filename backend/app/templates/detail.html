@@ -1,23 +1,36 @@
 {% extends "base.html" %}
+{% from "label_controls.html" import label_controls %}
 {% block title %}Отправление {{ order.posting_number }}{% endblock %}
+{% block head %}
+<script src="/static/label-load.js" defer></script>
+<script src="/static/label-window.js" defer></script>
+{% endblock %}
 {% block content %}
 <a class="back" href="/orders?account={{ order.account_key }}">← К отправлениям</a>
-<div class="heading"><h1>{{ order.posting_number }}</h1><span class="tag">{{ status_label }}</span></div>
+<div data-order-label>
+{% set number = label_number(label_job_id) %}
+<div class="heading">
+  <div>
+    <h1>{{ order.posting_number }}</h1>
+    <div class="label-number" data-label-number{% if not number %} hidden{% endif %}>{% if number %}№ этикетки {{ number }}{% endif %}</div>
+  </div>
+  <span class="tag">{{ status_label }}</span>
+</div>
 <section class="panel">
   <dl class="details">
-    <div><dt>Кабинет</dt><dd>{{ order.account_key }}</dd></div>
+    <div><dt>Кабинет</dt><dd>{{ cabinet_names[order.account_key] }}</dd></div>
     <div><dt>Номер заказа</dt><dd>{{ data.order_number or '—' }}</dd></div>
-    <div><dt>Начало обработки</dt><dd>{{ data.created_at[:16]|replace('T', ' ') ~ ' UTC' if data.created_at else '—' }}</dd></div>
-    <div><dt>Срок отгрузки</dt><dd>{{ data.shipment_date[:16]|replace('T', ' ') ~ ' UTC' if data.shipment_date else '—' }}</dd></div>
+    <div><dt>Начало обработки</dt><dd>{{ data.created_at|msk }}</dd></div>
+    <div><dt>Срок отгрузки</dt><dd>{{ data.shipment_date|msk }}</dd></div>
     <div><dt>Склад</dt><dd>{{ data.warehouse or '—' }}</dd></div>
     <div><dt>Способ доставки</dt><dd>{{ data.delivery_method or '—' }}</dd></div>
   </dl>
   {% if order.status == 'awaiting_deliver' %}
-  <form action="/orders/{{ order.account_key }}/{{ order.posting_number }}/label" method="post">
-    <button class="button" type="submit">Печать этикетки</button>
-  </form>
+  {% include "label_print_option.html" %}
+  {{ label_controls(order, printed, label_job_id) }}
   {% endif %}
 </section>
+</div>
 <section class="panel">
   <h2>Товары</h2>
   <div class="table"><table>
