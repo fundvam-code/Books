@@ -62,6 +62,19 @@ class PrintTask(Base):
     )
 
 
+class PrintLog(Base):
+    __tablename__ = "print_log"
+
+    task_id: Mapped[UUID] = mapped_column(primary_key=True)
+    label_job_id: Mapped[UUID] = mapped_column(primary_key=True)
+    event_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+    historical: Mapped[bool]
+    account_key: Mapped[str] = mapped_column(String(1))
+    posting_number: Mapped[str] = mapped_column(String(80))
+    book_title: Mapped[str] = mapped_column(Text)
+    label_number: Mapped[str | None] = mapped_column(Text)
+
+
 class Job(Base):
     __tablename__ = "jobs"
 

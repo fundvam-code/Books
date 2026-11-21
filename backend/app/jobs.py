@@ -52,9 +52,14 @@ def enqueue(db, kind, key, posting=""):
 
 def maintain(label_dir):
     with Session.begin() as db:
-        db.execute(update(PrintTask).where(PrintTask.state == "sending", PrintTask.lease_until <= now())
+        instant = now()
+        db.execute(update(PrintTask).where(PrintTask.state == "sending", PrintTask.lease_until <= instant)
                    .values(state="unknown", lease_until=None))
-        db.execute(delete(LabelBatch).where(LabelBatch.expires_at <= now()))
+        printing = select(PrintTask.id).where(
+            PrintTask.batch_id == LabelBatch.id, PrintTask.state.in_(("leased", "sending")),
+            PrintTask.lease_until > instant,
+        ).exists()
+        db.execute(delete(LabelBatch).where(LabelBatch.expires_at <= instant, ~printing))
         for key in db.scalars(select(Cabinet.key)):
             enqueue(db, "sync_orders", key)
         db.execute(delete(Job).where(

@@ -1,10 +1,8 @@
 import asyncio
 import logging
 import os
-import re
 from contextlib import asynccontextmanager, suppress
 from datetime import UTC, datetime, timedelta, timezone
-from functools import lru_cache
 from io import BytesIO
 from pathlib import Path
 from secrets import compare_digest
@@ -12,23 +10,24 @@ from typing import Annotated, Literal
 from urllib.parse import quote, urlencode
 from uuid import UUID
 
-from fastapi import Depends, FastAPI, Form, Header, HTTPException, Request, Response
+from fastapi import Depends, FastAPI, Form, Header, HTTPException, Query, Request, Response
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from PIL import Image
-from pypdf import PdfReader, PdfWriter
+from pypdf import PdfWriter
 from pypdf.errors import PyPdfError
 from pypdfium2 import PdfiumError
 from sqlalchemy import and_, delete, desc, func, select
 from sqlalchemy.dialects.postgresql import insert
 
-from .db import Cabinet, Heartbeat, Job, LabelBatch, LabelPrint, Order, PrintTask, Session
+from .db import Cabinet, Heartbeat, Job, LabelBatch, LabelPrint, Order, PrintLog, PrintTask, Session
 from .jobs import (ACTIVE, LABEL_STATUSES, OZON_ACCOUNTS, OZON_STATUSES, PDF_LIMIT, WB_ACCOUNT, WB_BOARD_STATUSES,
                    apply_snapshot, claim, enqueue, fail_job, initialize, maintain, now)
 from .label_title import NoTitleSpace, add_title
-from .printing import PRINT_LEASE, batch_versions, batch_writer, claim_print, create_batch, queue_print
+from .printing import (PRINT_LEASE, backfill_print_log, batch_item, batch_versions, batch_writer, book_title,
+                       claim_print, create_batch, label_metadata, pdf_label_number, queue_print, record_print)
 from .schemas import Account, AccountFilter, AgentAccounts, AgentHeartbeat, Completion, LabelTask, PrintResult
 from .wb_label import sticker_pdf
 
@@ -83,6 +82,7 @@ async def lifespan(app):
         raise RuntimeError("Укажите PUBLIC_DOMAIN и секрет агента длиной от 32 символов")
     LABEL_DIR.mkdir(parents=True, exist_ok=True)
     await asyncio.to_thread(initialize)
+    await asyncio.to_thread(backfill_print_log, LABEL_DIR)
     task = asyncio.create_task(scheduler())
     try:
         yield
@@ -287,34 +287,11 @@ def pdf_is_available(job_id):
     return job_id is not None and (LABEL_DIR / f"{job_id}.pdf").is_file()
 
 
-@lru_cache(maxsize=512)
 def label_number(job_id: UUID | None, account_key: str) -> str | None:
-    if job_id is None:
-        return None
-    try:
-        with (LABEL_DIR / f"{job_id}.pdf").open("rb") as source:
-            reader = PdfReader(source)
-            if account_key == WB_ACCOUNT:
-                return reader.metadata.title if reader.metadata else None
-            numbers = (
-                f"{prefix} {suffix}"
-                for page in reader.pages
-                for prefix, suffix in re.findall(r"(?mi)^\s*(ii[0-9]{7})\s+([0-9]{4})[ \t]*$", page.extract_text())
-            )
-            return ", ".join(dict.fromkeys(numbers)) or None
-    except (OSError, PyPdfError, ValueError):
-        return None
+    return pdf_label_number(LABEL_DIR / f"{job_id}.pdf", account_key) if job_id is not None else None
 
 
 templates.env.globals["label_number"] = label_number
-
-
-def book_title(order):
-    products = order.data.get("products", []) if order else []
-    names = (product.get("name") or "" for product in products)
-    return ", ".join(dict.fromkeys(name for name in (" ".join(text.split()) for text in names) if name))
-
-
 templates.env.globals["book_title"] = book_title
 
 
@@ -441,6 +418,7 @@ def download_print_pdf(task_id: UUID, auth: Agent, token: Lease):
             task.lease_until = None
             task.error = "Не удалось подготовить PDF. Проверьте наличие этикеток и настройку названия книги."
             return JSONResponse({"detail": task.error}, status_code=409)
+        batch.labels = label_metadata(db, batch, LABEL_DIR)
     return inline_pdf(data, "labels.pdf")
 
 
@@ -461,7 +439,21 @@ def finish_print(task_id: UUID, body: PrintResult, auth: Agent, token: Lease):
         task.lease_until = None
         if body.status == "failed":
             task.error = "Принтер не принял задание. Проверьте выбранную очередь macOS."
+        elif body.status == "submitted":
+            record_print(db, task, db.get(LabelBatch, task.batch_id), LABEL_DIR, submitted_at=now())
     return Response(status_code=204)
+
+
+@app.get("/print-log")
+def print_log(request: Request, page: Annotated[int, Query(ge=1, le=1_000_000)] = 1):
+    page_size = 50
+    with Session() as db:
+        rows = db.scalars(select(PrintLog).order_by(
+            PrintLog.event_at.desc(), PrintLog.task_id.desc(), PrintLog.label_job_id.desc(),
+        ).offset((page - 1) * page_size).limit(page_size + 1)).all()
+    return templates.TemplateResponse(request, "print_log.html", {
+        "rows": rows[:page_size], "page": page, "has_next": len(rows) > page_size,
+    })
 
 
 @app.get("/print-jobs/{task_id}")
@@ -516,9 +508,7 @@ def request_label(request: Request, account_key: Account, posting_number: str,
             raise HTTPException(409, "Этикетка недоступна на текущем этапе")
         job_id, ready = get_or_enqueue_label(db, order)
         if autoprint and request.headers.get("accept") != "application/json":
-            task_id = queue_print(db, account_key, [
-                {"job_id": str(job_id), "title": book_title(order) if with_title else ""},
-            ])
+            task_id = queue_print(db, account_key, [batch_item(order, job_id, with_title)])
             return RedirectResponse(f"/print-jobs/{task_id}", status_code=303)
     if request.headers.get("accept") == "application/json":
         return JSONResponse({"status_url": f"/labels/{job_id}"}, status_code=200 if ready else 202)
@@ -545,7 +535,7 @@ def request_label_batch(request: Request, account: Annotated[AccountFilter, Form
         items = []
         for order in orders:
             job_id, _ = get_or_enqueue_label(db, order)
-            items.append({"job_id": str(job_id), "title": book_title(order) if with_title else ""})
+            items.append(batch_item(order, job_id, with_title))
         if autoprint:
             task_id = queue_print(db, account, items)
             return RedirectResponse(f"/print-jobs/{task_id}", status_code=303)

@@ -1,18 +1,50 @@
 import json
+import re
 from datetime import timedelta
+from functools import lru_cache
 from hashlib import sha256
 from io import BytesIO
 from uuid import UUID, uuid4
 
-from pypdf import PdfWriter
+from pypdf import PdfReader, PdfWriter
+from pypdf.errors import PyPdfError
 from sqlalchemy import and_, or_, select
 from sqlalchemy.dialects.postgresql import insert
 
-from .db import Job, LabelBatch, PrintTask
+from .db import Job, LabelBatch, Order, PrintLog, PrintTask, Session
 from .jobs import ACTIVE, WB_ACCOUNT, now
 from .label_title import add_title
 
 PRINT_LEASE = timedelta(minutes=2)
+
+
+def book_title(order):
+    products = order.data.get("products", []) if order else []
+    names = (product.get("name") or "" for product in products)
+    return ", ".join(dict.fromkeys(name for name in (" ".join(value.split()) for value in names) if name))
+
+
+@lru_cache(maxsize=512)
+def pdf_label_number(path, account_key):
+    try:
+        with path.open("rb") as source:
+            reader = PdfReader(source)
+            if account_key == WB_ACCOUNT:
+                return reader.metadata.title if reader.metadata else None
+            numbers = (
+                f"{prefix} {suffix}"
+                for page in reader.pages
+                for prefix, suffix in re.findall(r"(?mi)^\s*(ii[0-9]{7})\s+([0-9]{4})[ \t]*$", page.extract_text())
+            )
+            return ", ".join(dict.fromkeys(numbers)) or None
+    except (OSError, PyPdfError, ValueError):
+        return None
+
+
+def batch_item(order, job_id, with_title):
+    title = book_title(order)
+    return {"job_id": str(job_id), "title": title if with_title else "", "book_title": title,
+            "account_key": order.account_key, "posting_number": order.posting_number}
 
 
 def create_batch(db, account, items):
@@ -22,7 +54,8 @@ def create_batch(db, account, items):
 
 
 def queue_print(db, account, items):
-    fingerprint = sha256(json.dumps(items, sort_keys=True).encode()).hexdigest()
+    printable = [{"job_id": item["job_id"], "title": item["title"]} for item in items]
+    fingerprint = sha256(json.dumps(printable, sort_keys=True).encode()).hexdigest()
     batch_id = create_batch(db, account, items)
     db.flush()
     task_id = db.scalar(insert(PrintTask).values(
@@ -33,6 +66,50 @@ def queue_print(db, account, items):
     db.delete(db.get(LabelBatch, batch_id))
     return db.scalar(select(PrintTask.id).where(PrintTask.fingerprint == fingerprint)
                      .order_by(PrintTask.created_at.desc()).limit(1))
+
+
+def label_metadata(db, batch, label_dir):
+    incomplete_ids = [UUID(item["job_id"]) for item in batch.labels
+                      if not item.get("posting_number") or not item.get("book_title")]
+    originals = {}
+    if incomplete_ids:
+        rows = db.execute(select(Job, Order).outerjoin(Order, and_(
+            Order.account_key == Job.account_key, Order.posting_number == Job.posting_number,
+        )).where(Job.id.in_(incomplete_ids)))
+        originals = {job.id: (job, order) for job, order in rows}
+
+    items = []
+    for item in batch.labels:
+        job_id = UUID(item["job_id"])
+        if job_id in originals:
+            job, order = originals[job_id]
+            item = {**item, "account_key": job.account_key, "posting_number": job.posting_number,
+                    "book_title": item.get("book_title") or item["title"] or book_title(order)}
+        if item.get("posting_number") and not item.get("label_number"):
+            item = {**item, "label_number": pdf_label_number(label_dir / f"{job_id}.pdf", item["account_key"])}
+        items.append(item)
+    return items
+
+
+def record_print(db, task, batch, label_dir, submitted_at=None):
+    rows = [
+        {"task_id": task.id, "label_job_id": UUID(item["job_id"]),
+         "event_at": submitted_at or task.created_at, "historical": submitted_at is None,
+         "account_key": item["account_key"], "posting_number": item["posting_number"],
+         "book_title": item["book_title"], "label_number": item.get("label_number")}
+        for item in label_metadata(db, batch, label_dir) if item.get("posting_number")
+    ]
+    if rows:
+        db.execute(insert(PrintLog).on_conflict_do_nothing(), rows)
+
+
+def backfill_print_log(label_dir):
+    logged = select(PrintLog.task_id).where(PrintLog.task_id == PrintTask.id).exists()
+    with Session.begin() as db:
+        rows = db.execute(select(PrintTask, LabelBatch).join(LabelBatch, LabelBatch.id == PrintTask.batch_id)
+                          .where(PrintTask.state == "submitted", ~logged))
+        for task, batch in rows:
+            record_print(db, task, batch, label_dir)
 
 
 def batch_versions(db, batch, label_dir):
