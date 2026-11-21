@@ -25,7 +25,7 @@ from sqlalchemy import and_, delete, desc, select
 from sqlalchemy.dialects.postgresql import insert
 
 from .db import Cabinet, Heartbeat, Job, LabelBatch, LabelPrint, Order, PrintTask, Session
-from .jobs import (ACTIVE, LABEL_STATUSES, OZON_ACCOUNTS, OZON_STATUSES, PDF_LIMIT, WB_ACCOUNT, WB_STATUSES,
+from .jobs import (ACTIVE, LABEL_STATUSES, OZON_ACCOUNTS, OZON_STATUSES, PDF_LIMIT, WB_ACCOUNT, WB_BOARD_STATUSES,
                    apply_snapshot, claim, enqueue, fail_job, initialize, maintain, now)
 from .label_title import NoTitleSpace, add_title
 from .printing import PRINT_LEASE, batch_versions, batch_writer, claim_print, create_batch, queue_print
@@ -38,8 +38,8 @@ MSK = timezone(timedelta(hours=3), "MSK")
 templates = Jinja2Templates(directory=ROOT / "templates")
 cabinet_names = {"1": "Золотая антилопа", "2": "Зеленая книга", WB_ACCOUNT: "Wildberries"}
 templates.env.globals.update(cabinet_names=cabinet_names, label_statuses=LABEL_STATUSES)
-labels = dict(zip((*OZON_STATUSES, *WB_STATUSES),
-                  ("Ожидают сборки", "Собраны — ждут отгрузки", "Новые", "На сборке", "В доставке")))
+labels = dict(zip((*OZON_STATUSES, *WB_BOARD_STATUSES),
+                  ("Ожидают сборки", "Собраны — ждут отгрузки", "Новые", "На сборке")))
 
 
 def format_msk(value: datetime | str | None) -> str:
@@ -331,7 +331,7 @@ def orders(request: Request, account: str = "all", hide_printed: bool = False):
         keys = tuple(registered) if account == "all" else (account,)
         cabinets = [registered[key] for key in keys]
         seen = db.get(Heartbeat, 1)
-        query = orders_with_labels().where(Order.account_key.in_(keys))
+        query = orders_with_labels().where(Order.account_key.in_(keys), Order.status.in_(tuple(labels)))
         if hide_printed:
             query = query.where(LabelPrint.posting_number.is_(None))
         records = db.execute(query).all()
@@ -343,7 +343,7 @@ def orders(request: Request, account: str = "all", hide_printed: bool = False):
     if any(key in OZON_ACCOUNTS for key in keys):
         boards.append(("Ozon", [(labels[status], orders_by_status[status]) for status in OZON_STATUSES]))
     if WB_ACCOUNT in keys:
-        boards.append(("Wildberries", [(labels[status], orders_by_status[status]) for status in WB_STATUSES]))
+        boards.append(("Wildberries", [(labels[status], orders_by_status[status]) for status in WB_BOARD_STATUSES]))
     return templates.TemplateResponse(request, "orders.html", {
         "account": account, "cabinets": cabinets, "boards": boards,
         "tabs": [("all", "Все кабинеты"), *((key, cabinet_names[key]) for key in registered)],
@@ -358,6 +358,7 @@ def detail(request: Request, account_key: Account, posting_number: str):
     with Session() as db:
         row = db.execute(orders_with_labels().where(
             Order.account_key == account_key, Order.posting_number == posting_number,
+            Order.status.in_(tuple(labels)),
         )).one_or_none()
     if row is None:
         raise HTTPException(404, "Активное отправление не найдено")

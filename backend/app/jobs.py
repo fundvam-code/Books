@@ -10,8 +10,9 @@ OZON_ACCOUNTS = ("1", "2")
 WB_ACCOUNT = "w"
 ACTIVE = ("pending", "leased")
 OZON_STATUSES = ("awaiting_packaging", "awaiting_deliver")
-WB_STATUSES = ("wb_new", "wb_confirm", "wb_complete")
-LABEL_STATUSES = ("awaiting_deliver", "wb_confirm", "wb_complete")
+WB_BOARD_STATUSES = ("wb_new", "wb_confirm")
+WB_STATUSES = (*WB_BOARD_STATUSES, "wb_complete")
+LABEL_STATUSES = ("awaiting_deliver", "wb_confirm")
 PDF_LIMIT = 8 * 1024 * 1024
 ERRORS = {
     "access": "{marketplace} отклонил доступ. Проверьте ключ и его права.",
@@ -98,12 +99,15 @@ def apply_snapshot(db, key, result):
     ) for row in rows.values())
     cabinet = db.get(Cabinet, key)
     cabinet.updated_at = now()
-    cabinet.error = None
+    cabinet.error = (
+        "Wildberries отклонил доступ к названиям. Укажите токен категории «Контент» в WB_CONTENT_TOKEN файла .env.wb."
+        if key == WB_ACCOUNT and result.catalog_access_denied else None
+    )
 
 
 def discard_reassigned_stickers(db, rows):
     prior = db.scalars(select(Order).where(
-        Order.account_key == WB_ACCOUNT, Order.status.in_(LABEL_STATUSES),
+        Order.account_key == WB_ACCOUNT, Order.status.in_(("wb_confirm", "wb_complete")),
     ).order_by(Order.posting_number).with_for_update())
     changed = []
     for order in prior:

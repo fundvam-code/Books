@@ -32,7 +32,6 @@ h2 { font-size: 1.1rem; margin: 0 0 1rem; }
 .sync > a { margin-left: auto; }
 .error { color: #9b2b23; }
 .board { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 1rem; align-items: start; }
-.board-three { grid-template-columns: repeat(3, minmax(0, 1fr)); }
 .lane { background: #eaf0f8; border: 1px solid var(--line); border-radius: .85rem; padding: 1rem; }
 .lane h2 { display: flex; gap: .55rem; align-items: center; }
 .card, .panel { border-radius: .65rem; border: 1px solid var(--line); background: var(--paper); padding: 1rem; margin-bottom: .75rem; }

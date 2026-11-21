@@ -42,6 +42,7 @@ class Posting(BaseModel):
 class SyncResult(BaseModel):
     orders: list[Posting]
     covered_since: datetime
+    catalog_access_denied: bool = False
 
 
 class Completion(BaseModel):

@@ -23,11 +23,12 @@ class Wildberries:
     def __init__(self, client, token, content_token=""):
         self.client = client
         self.token = token
-        self.content_token = content_token
+        self.content_token = content_token or token
         self.next_request = {}
         self.rate_limited_until = {}
         self.titles = {}
         self.content_retry_at = 0
+        self.catalog_access_denied = False
 
     async def request(self, method, path, *, content=False, label=False, **kwargs):
         origin, token, interval = (CONTENT, self.content_token, 0.75) if content else (MARKETPLACE, self.token, 0.2)
@@ -99,12 +100,13 @@ class Wildberries:
             for number, row in orders.items()
             if (status := statuses[number])["wbStatus"] == "waiting" and status["supplierStatus"] in ACTIVE
         ]
-        if self.content_token:
-            await self.update_titles({row["nmId"] for row, _ in active})
+        products = {row["nmId"] for row, status in active if status != "wb_complete"}
+        await self.update_titles(products)
         return {
             "orders": [normalize(key, row, status, self.titles.get(row["nmId"], ("", 0))[0])
                        for row, status in active],
             "covered_since": start.isoformat(),
+            "catalog_access_denied": bool(products) and self.catalog_access_denied,
         }
 
     async def update_titles(self, product_ids):
@@ -112,16 +114,20 @@ class Wildberries:
         if instant < self.content_retry_at:
             return
         missing = sorted(nm for nm in product_ids if self.titles.get(nm, ("", 0))[1] <= instant)
-        for nm in missing[:5]:
+        for nm in missing[:20]:
             try:
                 response = await self.request("POST", "/content/v2/get/cards/list", content=True, json={
                     "settings": {"cursor": {"limit": 100}, "filter": {"withPhoto": -1, "textSearch": str(nm)}},
                 })
                 title = next((card.get("title") or "" for card in response["cards"] if card["nmID"] == nm), "")
             except (MarketplaceError, KeyError, TypeError, ValueError) as error:
-                self.content_retry_at = monotonic() + max(60, getattr(error, "retry_after", None) or 0)
+                if isinstance(error, MarketplaceError) and error.code == "access":
+                    self.catalog_access_denied = True
+                delay = 900 if self.catalog_access_denied else 60
+                self.content_retry_at = monotonic() + max(delay, getattr(error, "retry_after", None) or 0)
                 log.warning("Не удалось получить названия товаров Wildberries")
                 return
+            self.catalog_access_denied = False
             self.titles[nm] = (str(title), monotonic() + (3600 if title else 600))
 
     async def get_sticker(self, number):

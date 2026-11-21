@@ -45,7 +45,7 @@
 {% endif %}
 {% for marketplace, columns in boards %}
 {% if boards|length > 1 %}<h2>{{ marketplace }}</h2>{% endif %}
-<div class="board{% if columns|length == 3 %} board-three{% endif %}">
+<div class="board">
   {% for title, orders in columns %}
   <section class="lane">
     <h2>{{ title }} <span class="count">{{ orders|length }}</span></h2>
