@@ -1,7 +1,9 @@
 {% extends "base.html" %}
 {% block title %}Печать через агент{% endblock %}
 {% block head %}
-{% if state in ('pending', 'leased', 'sending') and not failures %}
+{% if state == 'submitted' %}
+<script src="/static/print-close.js" defer></script>
+{% elif state in ('pending', 'leased', 'sending') and not failures %}
 <script src="/static/label.js" defer></script>
 {% endif %}
 {% endblock %}
