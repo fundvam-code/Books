@@ -22,9 +22,10 @@ from pypdfium2 import PdfiumError
 from sqlalchemy import and_, delete, desc, func, select
 from sqlalchemy.dialects.postgresql import insert
 
-from .db import Cabinet, Heartbeat, Job, LabelBatch, LabelPrint, Order, PrintLog, PrintTask, Session
+from .db import (Cabinet, Heartbeat, Job, LabelBatch, LabelPrint, Order, PrintLog, PrintTask, Session, Shift,
+                 write_transaction)
 from .jobs import (ACTIVE, LABEL_STATUSES, OZON_ACCOUNTS, OZON_STATUSES, PDF_LIMIT, WB_ACCOUNT, WB_BOARD_STATUSES,
-                   apply_snapshot, claim, enqueue, fail_job, initialize, maintain, now)
+                   ShiftConflict, apply_snapshot, claim, enqueue, fail_job, initialize, maintain, now, start_shift)
 from .label_title import NoTitleSpace, add_title
 from .printing import (PRINT_LEASE, backfill_print_log, batch_item, batch_versions, batch_writer, book_title,
                        claim_print, create_batch, label_metadata, mark_submitted_labels, pdf_label_number,
@@ -132,7 +133,7 @@ def health():
 
 @app.post("/api/agent/heartbeat", status_code=204)
 def heartbeat(body: AgentHeartbeat, auth: Agent):
-    with Session.begin() as db:
+    with write_transaction() as db:
         stamp = now()
         db.execute(insert(Heartbeat).values(id=1, seen_at=stamp).on_conflict_do_update(
             index_elements=["id"], set_={"seen_at": stamp},
@@ -146,7 +147,7 @@ def heartbeat(body: AgentHeartbeat, auth: Agent):
 
 @app.post("/api/agent/jobs/claim")
 def claim_job(auth: Agent, body: AgentAccounts | None = None):
-    with Session.begin() as db:
+    with write_transaction() as db:
         job = claim(db, body.account_keys if body else OZON_ACCOUNTS)
         if job is None:
             return Response(status_code=204)
@@ -166,7 +167,7 @@ def claim_job(auth: Agent, body: AgentAccounts | None = None):
 
 @app.post("/api/agent/jobs/{job_id}/renew", status_code=204)
 def renew_job(job_id: UUID, auth: Agent, token: Lease):
-    with Session.begin() as db:
+    with write_transaction() as db:
         job = locked_job(db, job_id, token)
         job.lease_until = now() + timedelta(seconds=90)
     return Response(status_code=204)
@@ -174,7 +175,7 @@ def renew_job(job_id: UUID, auth: Agent, token: Lease):
 
 @app.post("/api/agent/jobs/{job_id}/complete", status_code=204)
 def complete_job(job_id: UUID, body: Completion, auth: Agent, token: Lease):
-    with Session.begin() as db:
+    with write_transaction() as db:
         job = locked_job(db, job_id, token)
         if body.status == "succeeded":
             if job.kind != "sync_orders" or body.result is None:
@@ -192,7 +193,7 @@ def complete_job(job_id: UUID, body: Completion, auth: Agent, token: Lease):
 
 @app.put("/api/agent/jobs/{job_id}/label-task", status_code=204)
 def save_label_task(job_id: UUID, body: LabelTask, auth: Agent, token: Lease):
-    with Session.begin() as db:
+    with write_transaction() as db:
         job = locked_job(db, job_id, token)
         if (job.kind != "label_pdf" or job.account_key == WB_ACCOUNT
                 or job.ozon_task_id not in (None, body.ozon_task_id)):
@@ -202,7 +203,7 @@ def save_label_task(job_id: UUID, body: LabelTask, auth: Agent, token: Lease):
 
 
 def publish_pdf(job_id, token, data, *, wb=False):
-    with Session.begin() as db:
+    with write_transaction() as db:
         job = locked_job(db, job_id, token, allow_ready=True)
         if job.kind != "label_pdf" or wb != (job.account_key == WB_ACCOUNT):
             raise HTTPException(409, "Тип этикетки не соответствует заданию")
@@ -284,6 +285,15 @@ def has_printed_label():
     ).exists()
 
 
+def unprinted_label_counts(db, accounts):
+    counts = dict(db.execute(
+        select(Order.account_key, func.count()).where(
+            Order.account_key.in_(accounts), Order.status.in_(LABEL_STATUSES), ~has_printed_label(),
+        ).group_by(Order.account_key)
+    ).all())
+    return {**{key: counts.get(key, 0) for key in accounts}, "all": sum(counts.values())}
+
+
 def pdf_is_available(job_id):
     return job_id is not None and (LABEL_DIR / f"{job_id}.pdf").is_file()
 
@@ -308,7 +318,7 @@ def get_or_enqueue_label(db, order):
 
 
 @app.get("/orders")
-def orders(request: Request, account: str = "all", hide_printed: bool = False):
+def orders(request: Request, account: str = "all", hide_printed: bool = False, shift_started: UUID | None = None):
     with Session() as db:
         registered = {cabinet.key: cabinet for cabinet in db.scalars(select(Cabinet).order_by(Cabinet.key))}
         if account != "all" and account not in registered:
@@ -316,13 +326,10 @@ def orders(request: Request, account: str = "all", hide_printed: bool = False):
         keys = tuple(registered) if account == "all" else (account,)
         cabinets = [registered[key] for key in keys]
         seen = db.get(Heartbeat, 1)
-        unprinted_counts = dict(db.execute(
-            select(Order.account_key, func.count()).where(
-                Order.account_key.in_(tuple(registered)),
-                Order.status.in_(LABEL_STATUSES),
-                ~has_printed_label(),
-            ).group_by(Order.account_key)
-        ).all())
+        shift = db.get(Shift, 1) if shift_started else None
+        recent_shift = bool(shift and shift.revision == shift_started and shift.started_at
+                            and now() < shift.started_at + timedelta(seconds=90))
+        unprinted_counts = unprinted_label_counts(db, tuple(registered))
         query = orders_with_labels().where(Order.account_key.in_(keys), Order.status.in_(tuple(labels)))
         if hide_printed:
             query = query.where(LabelPrint.posting_number.is_(None))
@@ -338,14 +345,25 @@ def orders(request: Request, account: str = "all", hide_printed: bool = False):
         boards.append(("Wildberries", [(labels[status], orders_by_status[status]) for status in WB_BOARD_STATUSES]))
     return templates.TemplateResponse(request, "orders.html", {
         "account": account, "cabinets": cabinets, "boards": boards,
+        "active_tab_title": cabinet_names[account] if account != "all" else "Все кабинеты",
+        "active_tab_count": unprinted_counts[account],
         "tabs": [
-            ("all", "Все кабинеты", sum(unprinted_counts.values())),
-            *((key, cabinet_names[key], unprinted_counts.get(key, 0)) for key in registered),
+            ("all", "Все кабинеты", unprinted_counts["all"]),
+            *((key, cabinet_names[key], unprinted_counts[key]) for key in registered),
         ],
         "hide_printed": hide_printed,
+        "recent_shift": recent_shift,
+        "shift_loading": recent_shift and any(cabinet.updated_at is None and not cabinet.error for cabinet in cabinets),
         "has_printable": any(orders_by_status[status] for status in LABEL_STATUSES),
         "online": bool(seen and seen.seen_at >= now() - timedelta(seconds=120)),
     })
+
+
+@app.get("/orders/print-counts")
+def print_counts():
+    with Session() as db:
+        accounts = tuple(db.scalars(select(Cabinet.key)))
+        return unprinted_label_counts(db, accounts)
 
 
 @app.get("/orders/{account_key}/{posting_number}")
@@ -367,6 +385,30 @@ def detail(request: Request, account_key: Account, posting_number: str):
 def require_dashboard_origin(request: Request):
     if request.headers.get("origin") != "https://" + os.environ["PUBLIC_DOMAIN"]:
         raise HTTPException(403, "Откройте форму печати в дашборде")
+
+
+def shift_confirmation(request: Request, *, error=None, status_code=200):
+    with Session() as db:
+        revision = db.get(Shift, 1).revision
+    return templates.TemplateResponse(request, "shift_start.html", {
+        "revision": revision, "error": error,
+    }, status_code=status_code)
+
+
+@app.get("/shift/start")
+def shift_form(request: Request):
+    return shift_confirmation(request)
+
+
+@app.post("/shift/start")
+def confirm_shift(request: Request, revision: Annotated[UUID, Form()]):
+    if request.headers.get("origin") != "https://" + os.environ["PUBLIC_DOMAIN"]:
+        raise HTTPException(403, "Откройте подтверждение начала смены в дашборде")
+    try:
+        new_revision = start_shift(revision)
+    except ShiftConflict as error:
+        return shift_confirmation(request, error=str(error), status_code=409)
+    return RedirectResponse("/orders?" + urlencode({"shift_started": new_revision}), status_code=303)
 
 
 def label_url(path: str, **options: bool) -> str:
@@ -395,7 +437,7 @@ def locked_print_task(db, task_id, token, state):
 
 @app.post("/api/agent/print-queue/claim")
 def claim_print_job(auth: Agent):
-    with Session.begin() as db:
+    with write_transaction() as db:
         task = claim_print(db, LABEL_DIR)
         if task is None:
             return Response(status_code=204)
@@ -404,7 +446,7 @@ def claim_print_job(auth: Agent):
 
 @app.get("/api/agent/print-queue/{task_id}/pdf")
 def download_print_pdf(task_id: UUID, auth: Agent, token: Lease):
-    with Session.begin() as db:
+    with write_transaction() as db:
         task = locked_print_task(db, task_id, token, "leased")
         batch = db.get(LabelBatch, task.batch_id)
         try:
@@ -425,7 +467,7 @@ def download_print_pdf(task_id: UUID, auth: Agent, token: Lease):
 
 @app.post("/api/agent/print-queue/{task_id}/start", status_code=204)
 def start_print(task_id: UUID, auth: Agent, token: Lease):
-    with Session.begin() as db:
+    with write_transaction() as db:
         task = locked_print_task(db, task_id, token, "leased")
         task.state = "sending"
         task.lease_until = now() + PRINT_LEASE
@@ -434,7 +476,7 @@ def start_print(task_id: UUID, auth: Agent, token: Lease):
 
 @app.post("/api/agent/print-queue/{task_id}/finish", status_code=204)
 def finish_print(task_id: UUID, body: PrintResult, auth: Agent, token: Lease):
-    with Session.begin() as db:
+    with write_transaction() as db:
         task = locked_print_task(db, task_id, token, "sending")
         task.state = body.status
         task.lease_until = None
@@ -480,7 +522,7 @@ def mark_label_print(request: Request, account_key: Account, posting_number: str
                      return_account: Annotated[AccountFilter | None, Form()] = None,
                      hide_printed: Annotated[bool, Form()] = False):
     require_dashboard_origin(request)
-    with Session.begin() as db:
+    with write_transaction() as db:
         order = db.get(Order, (account_key, posting_number), with_for_update=True)
         if order is None or order.status not in LABEL_STATUSES:
             raise HTTPException(409, "Отметка о печати доступна после начала работы с этикеткой")
@@ -504,7 +546,7 @@ def request_label(request: Request, account_key: Account, posting_number: str,
                   with_title: Annotated[bool, Form()] = False, autoprint: Annotated[bool, Form()] = False,
                   open_pdf: Annotated[bool, Form()] = False):
     require_dashboard_origin(request)
-    with Session.begin() as db:
+    with write_transaction() as db:
         order = db.get(Order, (account_key, posting_number), with_for_update=True)
         if order is None or order.status not in LABEL_STATUSES:
             raise HTTPException(409, "Этикетка недоступна на текущем этапе")
@@ -525,7 +567,7 @@ def request_label_batch(request: Request, account: Annotated[AccountFilter, Form
                         with_title: Annotated[bool, Form()] = False, autoprint: Annotated[bool, Form()] = False,
                         hide_printed: Annotated[bool, Form()] = False):
     require_dashboard_origin(request)
-    with Session.begin() as db:
+    with write_transaction() as db:
         query = select(Order).where(Order.status.in_(LABEL_STATUSES))
         if account != "all":
             query = query.where(Order.account_key == account)

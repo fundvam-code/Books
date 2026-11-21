@@ -4,7 +4,8 @@ from uuid import uuid4
 from sqlalchemy import delete, or_, select, text, update
 from sqlalchemy.dialects.postgresql import insert
 
-from .db import Base, Cabinet, Job, LabelBatch, LabelPrint, Order, PrintTask, Session, engine
+from .db import (Base, Cabinet, Job, LabelBatch, LabelPrint, Order, PrintLog, PrintTask, Shift, engine,
+                 write_transaction)
 
 OZON_ACCOUNTS = ("1", "2")
 WB_ACCOUNT = "w"
@@ -39,6 +40,7 @@ def initialize():
         connection.execute(text("SELECT pg_advisory_xact_lock(73608201)"))
         # Начальная схема v1. Последующие версии добавляют миграции здесь.
         Base.metadata.create_all(connection)
+        connection.execute(insert(Shift).values(id=1, revision=uuid4()).on_conflict_do_nothing())
         for key in OZON_ACCOUNTS:
             connection.execute(insert(Cabinet).values(key=key).on_conflict_do_nothing())
 
@@ -52,7 +54,7 @@ def enqueue(db, kind, key, posting=""):
 
 
 def maintain(label_dir):
-    with Session.begin() as db:
+    with write_transaction() as db:
         instant = now()
         db.execute(update(PrintTask).where(PrintTask.state == "sending", PrintTask.lease_until <= instant)
                    .values(state="unknown", lease_until=None))
@@ -73,6 +75,37 @@ def maintain(label_dir):
         for job in expired:
             (label_dir / f"{job.id}.pdf").unlink(missing_ok=True)
             job.state = "expired"
+
+
+class ShiftConflict(Exception):
+    pass
+
+
+def start_shift(revision):
+    with write_transaction(exclusive=True) as db:
+        current = db.get(Shift, 1)
+        if current.revision != revision:
+            raise ShiftConflict("Смена уже была начата. Проверьте список отправлений.")
+        instant = now()
+        sending = select(PrintTask.id).where(PrintTask.state == "sending", PrintTask.lease_until > instant).exists()
+        if db.scalar(select(sending)):
+            raise ShiftConflict("Дождитесь завершения отправки на принтер и повторите.")
+
+        db.execute(delete(LabelBatch))
+        db.execute(delete(PrintLog))
+        db.execute(delete(LabelPrint))
+        db.execute(delete(Order))
+        db.execute(delete(Job).where(Job.state != "ready"))
+        # Revoke cached PDFs now and let the scheduler remove their files.
+        db.execute(update(Job).where(Job.state == "ready").values(
+            label_until=instant, lease_token=None, lease_until=None, error=None,
+        ))
+        db.execute(update(Cabinet).values(updated_at=None, error=None))
+        for key in db.scalars(select(Cabinet.key)):
+            enqueue(db, "sync_orders", key)
+        current.revision = uuid4()
+        current.started_at = instant
+        return current.revision
 
 
 def claim(db, account_keys):

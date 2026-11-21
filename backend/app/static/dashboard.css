@@ -53,7 +53,7 @@ h2 { font-size: 1.1rem; margin: 0 0 1rem; }
 .label-option { display: block; margin-bottom: .4rem; font-size: .9rem; }
 .batch-label-form { margin-bottom: 1rem; }
 .orders-filter { display: flex; flex-wrap: wrap; gap: .4rem 1.2rem; margin-bottom: 1rem; }
-.orders-footer { margin-top: 1.25rem; }
+.orders-footer { display: flex; flex-wrap: wrap; align-items: center; gap: 1rem; margin-top: 1.25rem; }
 .print-option { display: inline-block; margin-bottom: .4rem; }
 .orders-filter .print-option { margin-bottom: 0; }
 .details { display: grid; grid-template-columns: repeat(auto-fit, minmax(11rem, 1fr)); gap: .8rem; margin: 0 0 1rem; }

@@ -1,5 +1,6 @@
 {% extends "base.html" %}
 {% from "label_controls.html" import label_controls %}
+{% block title %}{{ active_tab_title }} ({{ active_tab_count }}) — Заказы FBS{% endblock %}
 {% block head %}
 <script src="/static/orders.js" defer></script>
 <script src="/static/label-load.js" defer></script>
@@ -12,7 +13,7 @@
 </div>
 <nav class="tabs" aria-label="Кабинеты">
   {% for key, title, count in tabs %}
-  <a href="{{ orders_url(key, hide_printed) }}"{% if key == account %} aria-current="page"{% endif %}>{{ title }} ({{ count }})</a>
+  <a href="{{ orders_url(key, hide_printed) }}"{% if key == account %} aria-current="page"{% endif %}>{{ title }} (<span data-print-count="{{ key }}">{{ count }}</span>)</a>
   {% endfor %}
 </nav>
 <section class="sync" aria-label="Синхронизация">
@@ -26,6 +27,9 @@
   {% endfor %}
   <a class="button secondary" href="{{ orders_url(account, hide_printed) }}">Обновить экран</a>
 </section>
+{% if recent_shift %}
+<p role="status"{% if shift_loading %} data-shift-loading{% endif %}>Смена начата.{% if shift_loading %} Загружаем отправления.{% endif %}</p>
+{% endif %}
 <div class="orders-filter">
   <form action="/orders" method="get">
     <input type="hidden" name="account" value="{{ account }}">
@@ -79,5 +83,8 @@
   {% endfor %}
 </div>
 {% endfor %}
-<footer class="orders-footer"><a href="/print-log">Журнал печати</a></footer>
+<footer class="orders-footer">
+  <a href="/print-log">Журнал печати</a>
+  <a class="button secondary" href="/shift/start">Начало смены</a>
+</footer>
 {% endblock %}

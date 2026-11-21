@@ -11,7 +11,7 @@ from pypdf.errors import PyPdfError
 from sqlalchemy import and_, or_, select
 from sqlalchemy.dialects.postgresql import insert
 
-from .db import Cabinet, Job, LabelBatch, LabelPrint, Order, PrintLog, PrintTask, Session
+from .db import Cabinet, Job, LabelBatch, LabelPrint, Order, PrintLog, PrintTask, write_transaction
 from .jobs import ACTIVE, LABEL_STATUSES, REASSIGNED_LABEL_ERROR, WB_ACCOUNT, now
 from .label_title import add_title
 
@@ -118,7 +118,7 @@ def mark_submitted_labels(db, task_id):
 
 def backfill_print_log(label_dir):
     logged = select(PrintLog.task_id).where(PrintLog.task_id == PrintTask.id).exists()
-    with Session.begin() as db:
+    with write_transaction() as db:
         rows = db.execute(select(PrintTask, LabelBatch).join(LabelBatch, LabelBatch.id == PrintTask.batch_id)
                           .where(PrintTask.state == "submitted", ~logged))
         for task, batch in rows:

@@ -1,4 +1,5 @@
 import os
+from contextlib import contextmanager
 from datetime import datetime
 from uuid import UUID
 
@@ -17,6 +18,14 @@ class Cabinet(Base):
     key: Mapped[str] = mapped_column(String(1), primary_key=True)
     updated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     error: Mapped[str | None] = mapped_column(Text)
+
+
+class Shift(Base):
+    __tablename__ = "shift"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    revision: Mapped[UUID]
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
 
 class Order(Base):
@@ -114,3 +123,13 @@ engine = create_engine(
     pool_pre_ping=True,
 )
 Session = sessionmaker(engine, expire_on_commit=False)
+
+
+@contextmanager
+def write_transaction(*, exclusive=False):
+    # Shift reset takes the exclusive form of the lock used by dashboard writes.
+    lock = ("SELECT pg_advisory_xact_lock(73608202)" if exclusive
+            else "SELECT pg_advisory_xact_lock_shared(73608202)")
+    with Session.begin() as db:
+        db.execute(text(lock))
+        yield db
