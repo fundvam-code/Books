@@ -43,6 +43,7 @@ class SyncResult(BaseModel):
     orders: list[Posting]
     covered_since: datetime
     catalog_access_denied: bool = False
+    catalog_status: Literal["denied", "unavailable", "not_found"] | None = None
 
 
 class Completion(BaseModel):

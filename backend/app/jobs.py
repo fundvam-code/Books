@@ -22,6 +22,11 @@ ERRORS = {
     "label": "{marketplace} не смог подготовить этикетку.",
     "profile": "На ПК не настроен ключ этого кабинета.",
 }
+CATALOG_ERRORS = {
+    "denied": "Wildberries отклонил доступ к названиям. Проверьте токен категории «Контент» в .env.wb.",
+    "unavailable": "Агент временно не получил названия из каталога Wildberries.",
+    "not_found": "Для части заказов названия не найдены в каталоге Wildberries.",
+}
 
 
 def now():
@@ -99,10 +104,20 @@ def apply_snapshot(db, key, result):
     ) for row in rows.values())
     cabinet = db.get(Cabinet, key)
     cabinet.updated_at = now()
-    cabinet.error = (
-        "Wildberries отклонил доступ к названиям. Укажите токен категории «Контент» в WB_CONTENT_TOKEN файла .env.wb."
-        if key == WB_ACCOUNT and result.catalog_access_denied else None
-    )
+    cabinet.error = catalog_error(result) if key == WB_ACCOUNT else None
+
+
+def catalog_error(result):
+    if result.catalog_access_denied:
+        return CATALOG_ERRORS["denied"]
+    if result.catalog_status:
+        return CATALOG_ERRORS[result.catalog_status]
+    if "catalog_status" not in result.model_fields_set and any(
+        row.status in WB_BOARD_STATUSES and any(not product.name for product in row.products)
+        for row in result.orders
+    ):
+        return "Обновите и перезапустите агент, чтобы проверить загрузку названий Wildberries."
+    return None
 
 
 def discard_reassigned_stickers(db, rows):

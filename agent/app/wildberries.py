@@ -28,7 +28,7 @@ class Wildberries:
         self.rate_limited_until = {}
         self.titles = {}
         self.content_retry_at = 0
-        self.catalog_access_denied = False
+        self.catalog_failure = None
 
     async def request(self, method, path, *, content=False, label=False, **kwargs):
         origin, token, interval = (CONTENT, self.content_token, 0.75) if content else (MARKETPLACE, self.token, 0.2)
@@ -100,13 +100,20 @@ class Wildberries:
             for number, row in orders.items()
             if (status := statuses[number])["wbStatus"] == "waiting" and status["supplierStatus"] in ACTIVE
         ]
-        products = {row["nmId"] for row, status in active if status != "wb_complete"}
+        products = {str(row["nmId"]) for row, status in active if status != "wb_complete"}
         await self.update_titles(products)
+        missing = {nm for nm in products if not self.titles.get(nm, ("", 0))[0]}
+        catalog_status = None
+        if missing:
+            catalog_status = self.catalog_failure
+            if not catalog_status and missing <= self.titles.keys():
+                catalog_status = "not_found"
         return {
-            "orders": [normalize(key, row, status, self.titles.get(row["nmId"], ("", 0))[0])
+            "orders": [normalize(key, row, status, self.titles.get(str(row["nmId"]), ("", 0))[0])
                        for row, status in active],
             "covered_since": start.isoformat(),
-            "catalog_access_denied": bool(products) and self.catalog_access_denied,
+            "catalog_status": catalog_status,
+            "catalog_access_denied": catalog_status == "denied",
         }
 
     async def update_titles(self, product_ids):
@@ -117,18 +124,19 @@ class Wildberries:
         for nm in missing[:20]:
             try:
                 response = await self.request("POST", "/content/v2/get/cards/list", content=True, json={
-                    "settings": {"cursor": {"limit": 100}, "filter": {"withPhoto": -1, "textSearch": str(nm)}},
+                    "settings": {"cursor": {"limit": 100}, "filter": {"withPhoto": -1, "textSearch": nm}},
                 })
-                title = next((card.get("title") or "" for card in response["cards"] if card["nmID"] == nm), "")
+                title = next((card["title"].strip() for card in response["cards"]
+                              if str(card.get("nmID")) == nm and isinstance(card.get("title"), str)), "")
             except (MarketplaceError, KeyError, TypeError, ValueError) as error:
-                if isinstance(error, MarketplaceError) and error.code == "access":
-                    self.catalog_access_denied = True
-                delay = 900 if self.catalog_access_denied else 60
+                code = getattr(error, "code", "response")
+                self.catalog_failure = "denied" if code == "access" else "unavailable"
+                delay = 900 if code == "access" else 60
                 self.content_retry_at = monotonic() + max(delay, getattr(error, "retry_after", None) or 0)
-                log.warning("Не удалось получить названия товаров Wildberries")
+                log.warning("Не удалось получить названия товаров Wildberries (%s)", code)
                 return
-            self.catalog_access_denied = False
-            self.titles[nm] = (str(title), monotonic() + (3600 if title else 600))
+            self.catalog_failure = None
+            self.titles[nm] = (title, monotonic() + (3600 if title else 600))
 
     async def get_sticker(self, number):
         order_id = int(number)

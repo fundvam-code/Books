@@ -64,7 +64,7 @@ def bottom_space(image, lines):
     return None
 
 
-def title_overlay(title, image, width, height):
+def ozon_title_overlay(title, image, width, height):
     for line_count in (2, 1):
         space = bottom_space(image, line_count)
         if space is None:
@@ -72,21 +72,41 @@ def title_overlay(title, image, width, height):
         left, available_width = space
         lines = title_lines(title, available_width)
         if lines and len(lines) <= line_count:
-            output = BytesIO()
-            canvas = Canvas(output, pagesize=(width, height))
-            canvas.setFont(FONT, FONT_SIZE)
-            for index, line in enumerate(reversed(lines)):
-                canvas.drawString(left, MARGIN + index * LINE_HEIGHT, line)
-            canvas.save()
-            output.seek(0)
-            return PdfReader(output).pages[0]
+            return title_overlay(lines, width, height, left, MARGIN)
     raise NoTitleSpace
 
 
-def add_title(source: bytes, title: str) -> bytes:
-    writer = PdfWriter(clone_from=BytesIO(source))
-    if not 1 <= len(writer.pages) <= 20:
+def title_overlay(lines, width, height, left, baseline):
+    output = BytesIO()
+    canvas = Canvas(output, pagesize=(width, height))
+    canvas.setFont(FONT, FONT_SIZE)
+    for index, line in enumerate(reversed(lines)):
+        canvas.drawString(left, baseline + index * LINE_HEIGHT, line)
+    canvas.save()
+    output.seek(0)
+    return PdfReader(output).pages[0]
+
+
+def add_wb_title(page, title):
+    box = page.mediabox
+    width, height = float(box.width), float(box.height)
+    if (page.rotation or page.user_unit != 1 or tuple(page.cropbox) != tuple(box)
+            or tuple(box.lower_left) != (0, 0) or not (0 < width <= 500 and 0 < height <= 500)):
         raise NoTitleSpace
+    lines = title_lines(title, width - 2 * MARGIN)
+    if not lines:
+        raise NoTitleSpace
+    baseline = 2
+    footer = baseline + (len(lines) - 1) * LINE_HEIGHT + FONT_SIZE + 2
+    if height <= footer:
+        raise NoTitleSpace
+    scale = (height - footer) / height
+    # Scale the original label uniformly and leave its full content above the title.
+    page.add_transformation(Transformation().scale(scale).translate((width - width * scale) / 2, footer))
+    page.merge_page(title_overlay(lines, width, height, MARGIN, baseline), expand=False)
+
+
+def add_ozon_title(writer, source, title):
     with PDFIUM_LOCK, PdfDocument(source) as document:
         for index, page in enumerate(writer.pages):
             with closing(document[index]) as rendered_page:
@@ -106,8 +126,19 @@ def add_title(source: bytes, title: str) -> bytes:
             }.get(page.rotation % 360)
             if transform is None:
                 raise NoTitleSpace
-            overlay = title_overlay(title, image, width, height)
+            overlay = ozon_title_overlay(title, image, width, height)
             page.merge_transformed_page(overlay, Transformation(transform), expand=False)
+
+
+def add_title(source: bytes, title: str, *, wb=False) -> bytes:
+    writer = PdfWriter(clone_from=BytesIO(source))
+    if not 1 <= len(writer.pages) <= 20:
+        raise NoTitleSpace
+    if wb:
+        for page in writer.pages:
+            add_wb_title(page, title)
+    else:
+        add_ozon_title(writer, source, title)
     output = BytesIO()
     writer.write(output)
     return output.getvalue()

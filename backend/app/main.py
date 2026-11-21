@@ -37,7 +37,7 @@ LABEL_DIR = Path(os.environ.get("LABEL_DIR", "/labels"))
 MSK = timezone(timedelta(hours=3), "MSK")
 templates = Jinja2Templates(directory=ROOT / "templates")
 cabinet_names = {"1": "Золотая антилопа", "2": "Зеленая книга", WB_ACCOUNT: "Wildberries"}
-templates.env.globals.update(cabinet_names=cabinet_names, label_statuses=LABEL_STATUSES)
+templates.env.globals.update(cabinet_names=cabinet_names, label_statuses=LABEL_STATUSES, wb_account=WB_ACCOUNT)
 labels = dict(zip((*OZON_STATUSES, *WB_BOARD_STATUSES),
                   ("Ожидают сборки", "Собраны — ждут отгрузки", "Новые", "На сборке")))
 
@@ -413,8 +413,13 @@ def download_print_pdf(task_id: UUID, auth: Agent, token: Lease):
         task = locked_print_task(db, task_id, token, "leased")
         batch = db.get(LabelBatch, task.batch_id)
         try:
-            data = pdf_bytes(batch_writer(batch, LABEL_DIR))
-        except (NoTitleSpace, PyPdfError, PdfiumError, OSError, ValueError):
+            data = pdf_bytes(batch_writer(db, batch, LABEL_DIR))
+        except NoTitleSpace:
+            task.state = "failed"
+            task.lease_until = None
+            task.error = "На этикетке нет места для названия. Повторите печать без названия."
+            return JSONResponse({"detail": task.error}, status_code=409)
+        except (PyPdfError, PdfiumError, OSError, ValueError):
             task.state = "failed"
             task.lease_until = None
             task.error = "Не удалось подготовить PDF. Проверьте наличие этикеток и настройку названия книги."
@@ -550,7 +555,8 @@ def label_batch(request: Request, batch_id: UUID, originals: bool = False, autop
     if pending or failures:
         return templates.TemplateResponse(request, "label_batch.html", context)
     try:
-        data = pdf_bytes(batch_writer(batch, LABEL_DIR, originals))
+        with Session() as db:
+            data = pdf_bytes(batch_writer(db, batch, LABEL_DIR, originals))
     except (NoTitleSpace, PyPdfError, PdfiumError, OSError):
         context["merge_error"] = True
         context["can_open_originals"] = not originals and any(item["title"] for item in batch.labels)
@@ -601,7 +607,7 @@ def label_pdf(request: Request, job_id: UUID, with_title: bool = False, autoprin
     title = book_title(order)
     if title:
         try:
-            data = add_title(path.read_bytes(), title)
+            data = add_title(path.read_bytes(), title, wb=job.account_key == WB_ACCOUNT)
             return inline_pdf(data, filename)
         except (NoTitleSpace, PyPdfError, PdfiumError, OSError):
             error = "Не удалось разместить название внизу этикетки. Откройте оригинальный PDF."

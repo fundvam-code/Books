@@ -9,7 +9,7 @@ from sqlalchemy import and_, or_, select
 from sqlalchemy.dialects.postgresql import insert
 
 from .db import Job, LabelBatch, PrintTask
-from .jobs import ACTIVE, now
+from .jobs import ACTIVE, WB_ACCOUNT, now
 from .label_title import add_title
 
 PRINT_LEASE = timedelta(minutes=2)
@@ -52,12 +52,16 @@ def batch_versions(db, batch, label_dir):
     return ready, pending, failures
 
 
-def batch_writer(batch, label_dir, originals=False):
+def batch_writer(db, batch, label_dir, originals=False):
+    titled_jobs = [UUID(item["job_id"]) for item in batch.labels if item["title"]] if not originals else []
+    wb_jobs = set(db.scalars(select(Job.id).where(
+        Job.account_key == WB_ACCOUNT, Job.id.in_(titled_jobs),
+    ))) if titled_jobs else set()
     writer = PdfWriter()
     for item in batch.labels:
         source = (label_dir / f'{item["job_id"]}.pdf').read_bytes()
         if item["title"] and not originals:
-            source = add_title(source, item["title"])
+            source = add_title(source, item["title"], wb=UUID(item["job_id"]) in wb_jobs)
         writer.append(BytesIO(source), import_outline=False)
     return writer
 
