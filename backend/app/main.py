@@ -21,7 +21,7 @@ from PIL import Image
 from pypdf import PdfReader, PdfWriter
 from pypdf.errors import PyPdfError
 from pypdfium2 import PdfiumError
-from sqlalchemy import and_, delete, desc, select
+from sqlalchemy import and_, delete, desc, func, select
 from sqlalchemy.dialects.postgresql import insert
 
 from .db import Cabinet, Heartbeat, Job, LabelBatch, LabelPrint, Order, PrintTask, Session
@@ -276,6 +276,13 @@ def orders_with_labels():
     ))
 
 
+def has_printed_label():
+    return select(LabelPrint.posting_number).where(
+        LabelPrint.account_key == Order.account_key,
+        LabelPrint.posting_number == Order.posting_number,
+    ).exists()
+
+
 def pdf_is_available(job_id):
     return job_id is not None and (LABEL_DIR / f"{job_id}.pdf").is_file()
 
@@ -331,6 +338,13 @@ def orders(request: Request, account: str = "all", hide_printed: bool = False):
         keys = tuple(registered) if account == "all" else (account,)
         cabinets = [registered[key] for key in keys]
         seen = db.get(Heartbeat, 1)
+        unprinted_counts = dict(db.execute(
+            select(Order.account_key, func.count()).where(
+                Order.account_key.in_(tuple(registered)),
+                Order.status.in_(LABEL_STATUSES),
+                ~has_printed_label(),
+            ).group_by(Order.account_key)
+        ).all())
         query = orders_with_labels().where(Order.account_key.in_(keys), Order.status.in_(tuple(labels)))
         if hide_printed:
             query = query.where(LabelPrint.posting_number.is_(None))
@@ -346,7 +360,10 @@ def orders(request: Request, account: str = "all", hide_printed: bool = False):
         boards.append(("Wildberries", [(labels[status], orders_by_status[status]) for status in WB_BOARD_STATUSES]))
     return templates.TemplateResponse(request, "orders.html", {
         "account": account, "cabinets": cabinets, "boards": boards,
-        "tabs": [("all", "Все кабинеты"), *((key, cabinet_names[key]) for key in registered)],
+        "tabs": [
+            ("all", "Все кабинеты", sum(unprinted_counts.values())),
+            *((key, cabinet_names[key], unprinted_counts.get(key, 0)) for key in registered),
+        ],
         "hide_printed": hide_printed,
         "has_printable": any(orders_by_status[status] for status in LABEL_STATUSES),
         "online": bool(seen and seen.seen_at >= now() - timedelta(seconds=120)),
@@ -521,10 +538,7 @@ def request_label_batch(request: Request, account: Annotated[AccountFilter, Form
         if account != "all":
             query = query.where(Order.account_key == account)
         if hide_printed:
-            printed = select(LabelPrint.posting_number).where(
-                LabelPrint.account_key == Order.account_key, LabelPrint.posting_number == Order.posting_number,
-            ).exists()
-            query = query.where(~printed)
+            query = query.where(~has_printed_label())
         orders = db.scalars(query.order_by(Order.account_key, Order.posting_number).with_for_update()).all()
         if not orders:
             raise HTTPException(409, "Нет отправлений с доступными этикетками")

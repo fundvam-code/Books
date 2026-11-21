@@ -11,8 +11,8 @@
   <span class="connection {{ 'online' if online else 'offline' }}">Агент {{ 'в сети' if online else 'не в сети' }}</span>
 </div>
 <nav class="tabs" aria-label="Кабинеты">
-  {% for key, title in tabs %}
-  <a href="{{ orders_url(key, hide_printed) }}"{% if key == account %} aria-current="page"{% endif %}>{{ title }}</a>
+  {% for key, title, count in tabs %}
+  <a href="{{ orders_url(key, hide_printed) }}"{% if key == account %} aria-current="page"{% endif %}>{{ title }} ({{ count }})</a>
   {% endfor %}
 </nav>
 <section class="sync" aria-label="Синхронизация">
