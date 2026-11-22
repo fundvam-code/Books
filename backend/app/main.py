@@ -46,7 +46,7 @@ templates = Jinja2Templates(directory=ROOT / "templates")
 cabinet_names = {"1": "Золотая антилопа", "2": "Зеленая книга", WB_ACCOUNT: "Wildberries"}
 templates.env.globals.update(cabinet_names=cabinet_names, label_statuses=LABEL_STATUSES, wb_account=WB_ACCOUNT)
 labels = dict(zip((*OZON_STATUSES, *WB_BOARD_STATUSES),
-                  ("Ожидают сборки", "Собраны — ждут отгрузки", "Новые", "На сборке")))
+                  ("Ожидают сборки", "Собраны - ждут печати", "Новые", "На сборке")))
 
 
 def format_msk(value: datetime | str | None) -> str:
