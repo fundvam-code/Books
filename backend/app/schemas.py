@@ -50,12 +50,16 @@ class Completion(BaseModel):
     status: Literal["succeeded", "retryable_error", "permanent_error"]
     result: SyncResult | None = None
     error: Literal["access", "rate", "unavailable", "response", "label", "profile",
-                   "assembly_conflict", "assembly_unknown"] | None = None
+                   "assembly_conflict", "assembly_unknown", "assembly_no_supply", "assembly_multiple_supplies"] | None = None
     retry_after: int | None = Field(default=None, ge=0, le=3600)
 
 
 class LabelTask(BaseModel):
     ozon_task_id: int = Field(gt=0, le=9223372036854775807)
+
+
+class AssemblyStart(BaseModel):
+    supply_id: str = Field(pattern=r"^[a-zA-Z0-9_-]{1,80}$")
 
 
 class PrintResult(BaseModel):
@@ -65,6 +69,7 @@ class PrintResult(BaseModel):
 class AgentAccounts(BaseModel):
     account_keys: list[Account] = Field(min_length=1, max_length=3)
     wb_assembly: bool = False
+    wb_auto_assembly: bool = False
 
 
 class AgentHeartbeat(AgentAccounts):

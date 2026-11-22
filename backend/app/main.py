@@ -25,14 +25,14 @@ from sqlalchemy.dialects.postgresql import insert
 from .db import (Cabinet, Heartbeat, Job, LabelBatch, LabelPrint, Order, OrderWaiting, PrintLog, PrintTask, Session, Shift, WbAssembly,
                  write_transaction)
 from .jobs import (ACTIVE, LABEL_STATUSES, OZON_ACCOUNTS, OZON_STATUSES, PDF_LIMIT, WB_ACCOUNT, WB_ASSEMBLY_KIND,
-                   WB_BOARD_STATUSES, WB_WRITE_HEARTBEAT_ID,
+                   WB_AUTO_ASSEMBLY_HEARTBEAT_ID, WB_BOARD_STATUSES,
                    ShiftConflict, apply_snapshot, claim, enqueue, fail_job, initialize, maintain, now, start_shift)
 from .label_title import NoTitleSpace, add_title
 from .printing import (PRINT_LEASE, TITLE_SPACE_ERROR, BatchTitleSpace, backfill_print_log,
                        batch_item, batch_versions, batch_writer, book_title,
                        claim_print, create_batch, label_metadata, mark_submitted_labels, pdf_label_number,
                        queue_print, record_print)
-from .schemas import Account, AccountFilter, AgentAccounts, AgentHeartbeat, Completion, LabelTask, PrintResult
+from .schemas import Account, AccountFilter, AgentAccounts, AgentHeartbeat, AssemblyStart, Completion, LabelTask, PrintResult
 from .wb_label import sticker_pdf
 
 ROOT = Path(__file__).parent
@@ -146,8 +146,8 @@ def heartbeat(body: AgentHeartbeat, auth: Agent):
             created = db.scalar(insert(Cabinet).values(key=WB_ACCOUNT).on_conflict_do_nothing().returning(Cabinet.key))
             if created:
                 enqueue(db, "sync_orders", WB_ACCOUNT)
-            if body.wb_assembly:
-                db.execute(insert(Heartbeat).values(id=WB_WRITE_HEARTBEAT_ID, seen_at=stamp).on_conflict_do_update(
+            if body.wb_auto_assembly:
+                db.execute(insert(Heartbeat).values(id=WB_AUTO_ASSEMBLY_HEARTBEAT_ID, seen_at=stamp).on_conflict_do_update(
                     index_elements=["id"], set_={"seen_at": stamp},
                 ))
     return Response(status_code=204)
@@ -157,7 +157,7 @@ def heartbeat(body: AgentHeartbeat, auth: Agent):
 def claim_job(auth: Agent, body: AgentAccounts | None = None):
     with write_transaction() as db:
         job = claim(db, body.account_keys if body else OZON_ACCOUNTS,
-                    wb_assembly=bool(body and body.wb_assembly))
+                    wb_assembly=bool(body and body.wb_assembly), wb_auto_assembly=bool(body and body.wb_auto_assembly))
         if job is None:
             return Response(status_code=204)
         payload = {}
@@ -185,12 +185,18 @@ def renew_job(job_id: UUID, auth: Agent, token: Lease):
 
 
 @app.post("/api/agent/jobs/{job_id}/assembly-start", status_code=204)
-def start_wb_assembly(job_id: UUID, auth: Agent, token: Lease):
+def start_wb_assembly(job_id: UUID, auth: Agent, token: Lease, body: AssemblyStart | None = None):
     with write_transaction() as db:
         job = locked_job(db, job_id, token)
         action = db.get(WbAssembly, job.id) if job.kind == WB_ASSEMBLY_KIND else None
         if action is None or action.started_at is not None:
             raise HTTPException(409, "Перевод уже начат или недоступен")
+        if body is not None:
+            if action.supply_id and action.supply_id != body.supply_id:
+                raise HTTPException(409, "Поставка не совпадает с заданием")
+            action.supply_id = body.supply_id
+        if not action.supply_id:
+            raise HTTPException(409, "Открытая поставка ещё не определена")
         action.started_at = now()
         job.lease_until = action.started_at + timedelta(seconds=90)
     return Response(status_code=204)
@@ -440,7 +446,7 @@ def require_dashboard_origin(request: Request):
 
 
 def wb_write_online(db):
-    agent = db.get(Heartbeat, WB_WRITE_HEARTBEAT_ID)
+    agent = db.get(Heartbeat, WB_AUTO_ASSEMBLY_HEARTBEAT_ID)
     return bool(agent and agent.seen_at >= now() - timedelta(seconds=120))
 
 
@@ -450,19 +456,14 @@ def wb_assembly_form(request: Request, posting_number: str):
         order = db.get(Order, (WB_ACCOUNT, posting_number))
         if order is None or order.status != "wb_new":
             raise HTTPException(404, "Новое задание Wildberries не найдено")
-        candidate = Order.data["supply_id"].as_string()
-        supplies = db.scalars(select(candidate).where(
-            Order.account_key == WB_ACCOUNT, Order.status == "wb_confirm", candidate.is_not(None),
-        ).distinct().order_by(candidate).limit(30)).all()
         enabled = wb_write_online(db)
     return templates.TemplateResponse(request, "wb_assembly.html", {
-        "order": order, "supplies": supplies, "enabled": enabled,
+        "order": order, "enabled": enabled,
     })
 
 
 @app.post("/orders/w/{posting_number}/assembly")
-def request_wb_assembly(request: Request, posting_number: str,
-                        supply_id: Annotated[str, Form(pattern=r"^[a-zA-Z0-9_-]{1,80}$")]):
+def request_wb_assembly(request: Request, posting_number: str):
     if request.headers.get("origin") != "https://" + os.environ["PUBLIC_DOMAIN"]:
         raise HTTPException(403, "Откройте форму перевода на сборку в дашборде")
     with write_transaction() as db:
@@ -473,13 +474,13 @@ def request_wb_assembly(request: Request, posting_number: str,
             raise HTTPException(409, "Агент с настроенным WB_WRITE_TOKEN сейчас недоступен")
         job_id = enqueue(db, WB_ASSEMBLY_KIND, WB_ACCOUNT, posting_number)
         if job_id is not None:
-            db.add(WbAssembly(job_id=job_id, supply_id=supply_id))
+            db.add(WbAssembly(job_id=job_id))
         else:
             job_id = db.scalar(select(Job.id).where(
                 Job.kind == WB_ASSEMBLY_KIND, Job.account_key == WB_ACCOUNT,
                 Job.posting_number == posting_number, Job.state.in_(ACTIVE),
             ))
-            if job_id is None or db.get(WbAssembly, job_id).supply_id != supply_id:
+            if job_id is None:
                 raise HTTPException(409, "Перевод этого задания уже запрошен")
     return RedirectResponse(f"/wb-assembly/{job_id}", status_code=303)
 

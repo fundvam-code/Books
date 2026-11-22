@@ -145,6 +145,38 @@ class Wildberries:
             self.catalog_failure = None
             self.titles[nm] = (title, monotonic() + (3600 if title else 600))
 
+    async def find_open_supply(self):
+        cursor = 0
+        seen = {cursor}
+        opened = set()
+        while True:
+            result = await self.request("GET", "/api/v3/supplies", write=True,
+                                        params={"limit": PAGE_SIZE, "next": cursor})
+            supplies, cursor = result.get("supplies"), result.get("next", 0)
+            if not isinstance(supplies, list) or type(cursor) is not int or cursor < 0:
+                raise MarketplaceError("response", True)
+            for supply in supplies:
+                if not isinstance(supply, dict):
+                    raise MarketplaceError("response", True)
+                done = supply.get("done")
+                if type(done) is not bool:
+                    raise MarketplaceError("response", True)
+                if not done:
+                    supply_id = supply.get("id")
+                    if not isinstance(supply_id, str) or not re.fullmatch(r"[A-Za-z0-9_-]{1,80}", supply_id):
+                        raise MarketplaceError("response", True)
+                    opened.add(supply_id)
+                    if len(opened) > 1:
+                        raise MarketplaceError("assembly_multiple_supplies")
+            if not supplies or cursor == 0:
+                break
+            if cursor in seen:
+                raise MarketplaceError("response", True)
+            seen.add(cursor)
+        if not opened:
+            raise MarketplaceError("assembly_no_supply")
+        return opened.pop()
+
     async def check_assembly(self, number, supply_id):
         try:
             supply = await self.request("GET", f"/api/v3/supplies/{supply_id}", write=True)

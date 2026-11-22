@@ -7,7 +7,7 @@
 <a class="back" href="/orders?account=w">← К заказам Wildberries</a>
 <div class="heading"><h1>Перенос на сборку</h1></div>
 <section class="panel" aria-live="polite">
-  <p>Задание № {{ job.posting_number }} · Поставка {{ action.supply_id }}</p>
+  <p>Задание № {{ job.posting_number }}{% if action.supply_id %} · Поставка {{ action.supply_id }}{% endif %}</p>
   {% if job.state == 'done' %}
   <p>Wildberries подтвердил перенос. Задание появится в колонке «На сборке» после обновления списка.</p>
   {% elif job.state == 'failed' %}
@@ -15,7 +15,7 @@
   {% elif action.started_at %}
   <p>Ожидаем подтверждение Wildberries.</p>
   {% else %}
-  <p>Ожидаем, пока локальный агент проверит задание и поставку.</p>
+  <p>Локальный агент ищет открытую поставку и проверяет задание.</p>
   {% endif %}
 </section>
 {% endblock %}

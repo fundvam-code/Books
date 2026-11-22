@@ -126,7 +126,7 @@ class WbAssembly(Base):
     __tablename__ = "wb_assembly"
 
     job_id: Mapped[UUID] = mapped_column(ForeignKey("jobs.id", ondelete="CASCADE"), primary_key=True)
-    supply_id: Mapped[str] = mapped_column(String(80))
+    supply_id: Mapped[str | None] = mapped_column(String(80))
     started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
 

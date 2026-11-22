@@ -1,7 +1,7 @@
 from datetime import UTC, datetime, timedelta
 from uuid import uuid4
 
-from sqlalchemy import delete, or_, select, text, update
+from sqlalchemy import delete, inspect, or_, select, text, update
 from sqlalchemy.dialects.postgresql import insert
 
 from .db import (Base, Cabinet, Job, LabelBatch, LabelPrint, Order, OrderWaiting, PrintLog, PrintTask, Shift, WbAssembly, engine,
@@ -10,7 +10,7 @@ from .db import (Base, Cabinet, Job, LabelBatch, LabelPrint, Order, OrderWaiting
 OZON_ACCOUNTS = ("1", "2")
 WB_ACCOUNT = "w"
 WB_ASSEMBLY_KIND = "wb_assembly"
-WB_WRITE_HEARTBEAT_ID = 2
+WB_AUTO_ASSEMBLY_HEARTBEAT_ID = 3
 ACTIVE = ("pending", "leased")
 OZON_STATUSES = ("awaiting_packaging", "awaiting_deliver")
 WB_BOARD_STATUSES = ("wb_new", "wb_confirm")
@@ -27,6 +27,8 @@ ERRORS = {
     "profile": "На ПК не настроен ключ этого кабинета.",
     "assembly_conflict": "Проверьте, что поставка открыта, подходит для заказа и заказ ещё находится в «Новых».",
     "assembly_unknown": "Wildberries не подтвердил результат. Проверьте заказ в кабинете перед повтором.",
+    "assembly_no_supply": "Открытая поставка не найдена. Создайте поставку в WB Partners и повторите перенос.",
+    "assembly_multiple_supplies": "Найдено несколько открытых поставок. Выберите нужную в кабинете WB Partners.",
 }
 CATALOG_ERRORS = {
     "denied": "Wildberries отклонил доступ к названиям. Проверьте токен категории «Контент» в .env.wb.",
@@ -44,6 +46,9 @@ def initialize():
         connection.execute(text("SELECT pg_advisory_xact_lock(73608201)"))
         # Начальная схема v1. Последующие версии добавляют миграции здесь.
         Base.metadata.create_all(connection)
+        columns = inspect(connection).get_columns(WbAssembly.__tablename__)
+        if any(column["name"] == "supply_id" and not column["nullable"] for column in columns):
+            connection.execute(text("ALTER TABLE wb_assembly ALTER COLUMN supply_id DROP NOT NULL"))
         connection.execute(insert(Shift).values(id=1, revision=uuid4()).on_conflict_do_nothing())
         for key in OZON_ACCOUNTS:
             connection.execute(insert(Cabinet).values(key=key).on_conflict_do_nothing())
@@ -125,7 +130,7 @@ def assembly_started():
     return select(WbAssembly.job_id).where(WbAssembly.job_id == Job.id, WbAssembly.started_at.is_not(None)).exists()
 
 
-def claim(db, account_keys, *, wb_assembly=False):
+def claim(db, account_keys, *, wb_assembly=False, wb_auto_assembly=False):
     instant = now()
     query = select(Job).where(
         Job.account_key.in_(account_keys),
@@ -134,10 +139,15 @@ def claim(db, account_keys, *, wb_assembly=False):
             (Job.state == "leased") & (Job.lease_until <= instant),
         ),
     ).order_by((Job.kind == "label_pdf").desc(), Job.available_at, Job.id).limit(1)
-    if wb_assembly:
+    if wb_assembly or wb_auto_assembly:
         query = query.where(~assembly_started())
     else:
         query = query.where(Job.kind != WB_ASSEMBLY_KIND)
+    if wb_assembly and not wb_auto_assembly:
+        selected_supply = select(WbAssembly.job_id).where(
+            WbAssembly.job_id == Job.id, WbAssembly.supply_id.is_not(None),
+        ).exists()
+        query = query.where(or_(Job.kind != WB_ASSEMBLY_KIND, selected_supply))
     job = db.scalar(query.with_for_update(skip_locked=True))
     if job is None:
         return None

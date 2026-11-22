@@ -63,9 +63,10 @@ async def process(server, job, profiles):
             return
 
         if account == WB_ACCOUNT and job["kind"] == "wb_assembly":
-            number, supply = payload["posting_number"], payload["supply_id"]
+            number = payload["posting_number"]
+            supply = payload.get("supply_id") or await marketplace.find_open_supply()
             await marketplace.check_assembly(number, supply)
-            await server.request("POST", "assembly-start", job=job)
+            await server.request("POST", "assembly-start", job=job, json={"supply_id": supply})
             await marketplace.move_to_assembly(number, supply)
             await server.request("POST", "complete", job=job, json={"status": "succeeded"})
             return
@@ -129,7 +130,8 @@ async def run():
         if not profiles:
             raise SystemExit("Настройте ключ хотя бы одного кабинета Ozon или Wildberries")
         server = Server(api)
-        capabilities = {"account_keys": list(profiles), "wb_assembly": bool(wb_token and wb_write_token)}
+        wb_assembly = bool(wb_token and wb_write_token)
+        capabilities = {"account_keys": list(profiles), "wb_assembly": wb_assembly, "wb_auto_assembly": wb_assembly}
         async with asyncio.TaskGroup() as group:
             group.create_task(heartbeat(server, capabilities))
             if printer:
