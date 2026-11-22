@@ -1,8 +1,8 @@
 {% extends "base.html" %}
 {% from "label_controls.html" import label_controls, waiting_control %}
-{% block title %}{{ active_tab_title }} ({{ active_tab_count }}) — Заказы FBS{% endblock %}
+{% block title %}{{ active_tab_title }} ({{ active_tab_count|join(' / ') }}) — Заказы FBS{% endblock %}
 {% block head %}
-<script src="/static/orders.js" defer></script>
+<script src="/static/orders.js?v=2" defer></script>
 <script src="/static/label-load.js" defer></script>
 <script src="/static/label-window.js" defer></script>
 {% endblock %}
@@ -57,7 +57,7 @@
 </div>
 <nav class="tabs" aria-label="Кабинеты">
   {% for key, title, count in tabs %}
-  <a href="{{ orders_url(key, hide_printed, hide_waiting) }}"{% if key == account %} aria-current="page"{% endif %}>{{ title }} (<span data-print-count="{{ key }}">{{ count }}</span>)</a>
+  <a href="{{ orders_url(key, hide_printed, hide_waiting) }}"{% if key == account %} aria-current="page"{% endif %}>{{ title }} (<span data-stage-count="{{ key }}" title="Ожидают сборки / ждут отгрузки без отметки о печати">{{ count|join(' / ') }}</span>)</a>
   {% endfor %}
 </nav>
 <section class="sync" aria-label="Синхронизация">

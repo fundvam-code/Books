@@ -401,17 +401,22 @@ def has_printed_label():
     ).exists()
 
 
-def unprinted_label_counts(db, accounts):
+def order_stage_counts(db, accounts):
     waiting = select(OrderWaiting.posting_number).where(
         OrderWaiting.account_key == Order.account_key,
         OrderWaiting.posting_number == Order.posting_number,
     ).exists()
-    counts = dict(db.execute(
-        select(Order.account_key, func.count()).where(
-            Order.account_key.in_(accounts), Order.status.in_(LABEL_STATUSES), ~has_printed_label(), ~waiting,
-        ).group_by(Order.account_key)
-    ).all())
-    return {**{key: counts.get(key, 0) for key in accounts}, "all": sum(counts.values())}
+    rows = db.execute(
+        select(
+            Order.account_key,
+            func.count().filter(Order.status.in_(("awaiting_packaging", "wb_new"))),
+            func.count().filter(Order.status.in_(LABEL_STATUSES), ~has_printed_label()),
+        ).where(Order.account_key.in_(accounts), ~waiting).group_by(Order.account_key)
+    )
+    counts = {key: [0, 0] for key in accounts}
+    for key, assembly, shipment in rows:
+        counts[key] = [assembly, shipment]
+    return {**counts, "all": [sum(pair[0] for pair in counts.values()), sum(pair[1] for pair in counts.values())]}
 
 
 def pdf_is_available(job_id):
@@ -451,7 +456,7 @@ def orders(request: Request, account: str = "all", hide_printed: bool = False, s
         shift = db.get(Shift, 1) if shift_started else None
         recent_shift = bool(shift and shift.revision == shift_started and shift.started_at
                             and now() < shift.started_at + timedelta(seconds=90))
-        unprinted_counts = unprinted_label_counts(db, tuple(registered))
+        stage_counts = order_stage_counts(db, tuple(registered))
         query = orders_with_labels().where(Order.account_key.in_(keys), Order.status.in_(tuple(labels)))
         if hide_printed:
             query = query.where(or_(LabelPrint.posting_number.is_(None), OrderWaiting.posting_number.is_not(None)))
@@ -482,10 +487,10 @@ def orders(request: Request, account: str = "all", hide_printed: bool = False, s
     return templates.TemplateResponse(request, "orders.html", {
         "account": account, "cabinets": cabinets, "boards": boards,
         "active_tab_title": cabinet_names[account] if account != "all" else "Все кабинеты",
-        "active_tab_count": unprinted_counts[account],
+        "active_tab_count": stage_counts[account],
         "tabs": [
-            ("all", "Все кабинеты", unprinted_counts["all"]),
-            *((key, cabinet_names[key], unprinted_counts[key]) for key in registered),
+            ("all", "Все кабинеты", stage_counts["all"]),
+            *((key, cabinet_names[key], stage_counts[key]) for key in registered),
         ],
         "hide_printed": hide_printed,
         "hide_waiting": hide_waiting,
@@ -503,11 +508,11 @@ def orders(request: Request, account: str = "all", hide_printed: bool = False, s
     })
 
 
-@app.get("/orders/print-counts")
-def print_counts():
+@app.get("/orders/stage-counts")
+def stage_counts():
     with Session() as db:
         accounts = tuple(db.scalars(select(Cabinet.key)))
-        return unprinted_label_counts(db, accounts)
+        return order_stage_counts(db, accounts)
 
 
 @app.get("/orders/{account_key}/{posting_number}")
