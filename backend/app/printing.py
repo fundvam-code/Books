@@ -13,9 +13,16 @@ from sqlalchemy.dialects.postgresql import insert
 
 from .db import Cabinet, Job, LabelBatch, LabelPrint, Order, PrintLog, PrintTask, write_transaction
 from .jobs import ACTIVE, LABEL_STATUSES, REASSIGNED_LABEL_ERROR, WB_ACCOUNT, now
-from .label_title import add_title
+from .label_title import NoTitleSpace, add_title
 
 PRINT_LEASE = timedelta(minutes=2)
+TITLE_SPACE_ERROR = "На этикетке нет места для названия. Повторите печать без названия."
+
+
+class BatchTitleSpace(NoTitleSpace):
+    def __init__(self, job_ids):
+        super().__init__(TITLE_SPACE_ERROR)
+        self.job_ids = frozenset(job_ids)
 
 
 def book_title(order):
@@ -148,11 +155,18 @@ def batch_writer(db, batch, label_dir, originals=False):
         Job.account_key == WB_ACCOUNT, Job.id.in_(titled_jobs),
     ))) if titled_jobs else set()
     writer = PdfWriter()
+    blocked = []
     for item in batch.labels:
         source = (label_dir / f'{item["job_id"]}.pdf').read_bytes()
         if item["title"] and not originals:
-            source = add_title(source, item["title"], wb=UUID(item["job_id"]) in wb_jobs)
+            try:
+                source = add_title(source, item["title"], wb=UUID(item["job_id"]) in wb_jobs)
+            except NoTitleSpace:
+                blocked.append(item["job_id"])
+                continue
         writer.append(BytesIO(source), import_outline=False)
+    if blocked:
+        raise BatchTitleSpace(blocked)
     return writer
 
 

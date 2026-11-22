@@ -7,7 +7,9 @@
 <a class="back" href="{{ orders_url(batch.account, hide_printed, not show_waiting) }}">← К отправлениям</a>
 <div class="heading"><h1>Печать всех этикеток</h1></div>
 <section class="panel" aria-live="polite">
-  {% if merge_error %}
+  {% if title_error %}
+    {% include "batch_title_error.html" %}
+  {% elif merge_error %}
     {% if can_open_originals %}
     <p>Не удалось добавить название на одну из этикеток.</p>
     <a class="button" href="{{ originals_url }}">Открыть все этикетки без названий</a>

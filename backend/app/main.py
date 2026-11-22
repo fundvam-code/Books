@@ -27,7 +27,8 @@ from .db import (Cabinet, Heartbeat, Job, LabelBatch, LabelPrint, Order, OrderWa
 from .jobs import (ACTIVE, LABEL_STATUSES, OZON_ACCOUNTS, OZON_STATUSES, PDF_LIMIT, WB_ACCOUNT, WB_BOARD_STATUSES,
                    ShiftConflict, apply_snapshot, claim, enqueue, fail_job, initialize, maintain, now, start_shift)
 from .label_title import NoTitleSpace, add_title
-from .printing import (PRINT_LEASE, backfill_print_log, batch_item, batch_versions, batch_writer, book_title,
+from .printing import (PRINT_LEASE, TITLE_SPACE_ERROR, BatchTitleSpace, backfill_print_log,
+                       batch_item, batch_versions, batch_writer, book_title,
                        claim_print, create_batch, label_metadata, mark_submitted_labels, pdf_label_number,
                        queue_print, record_print)
 from .schemas import Account, AccountFilter, AgentAccounts, AgentHeartbeat, Completion, LabelTask, PrintResult
@@ -474,10 +475,13 @@ def download_print_pdf(task_id: UUID, auth: Agent, token: Lease):
         batch = db.get(LabelBatch, task.batch_id)
         try:
             data = pdf_bytes(batch_writer(db, batch, LABEL_DIR))
-        except NoTitleSpace:
+        except BatchTitleSpace as error:
             task.state = "failed"
             task.lease_until = None
-            task.error = "На этикетке нет места для названия. Повторите печать без названия."
+            task.error = TITLE_SPACE_ERROR
+            batch.labels = [
+                {**item, "title_no_space": item["job_id"] in error.job_ids} for item in batch.labels
+            ]
             return JSONResponse({"detail": task.error}, status_code=409)
         except (PyPdfError, PdfiumError, OSError, ValueError):
             task.state = "failed"
@@ -536,6 +540,10 @@ def print_job_status(request: Request, task_id: UUID):
         state = "unknown"
     return templates.TemplateResponse(request, "print_job.html", {
         "task": task, "batch": batch, "state": state, "ready": ready, "pending": pending, "failures": failures,
+        "title_error": state == "failed" and task.error == TITLE_SPACE_ERROR,
+        "title_postings": [item["posting_number"] for item in batch.labels
+                           if item.get("title_no_space") and item.get("posting_number")],
+        "originals_url": label_url(f"/label-batches/{batch.id}", originals=True),
     })
 
 
@@ -671,7 +679,12 @@ def label_batch(request: Request, batch_id: UUID, originals: bool = False, autop
     try:
         with Session() as db:
             data = pdf_bytes(batch_writer(db, batch, LABEL_DIR, originals))
-    except (NoTitleSpace, PyPdfError, PdfiumError, OSError):
+    except BatchTitleSpace as error:
+        context["title_error"] = True
+        context["title_postings"] = [item["posting_number"] for item in batch.labels
+                                     if item["job_id"] in error.job_ids and item.get("posting_number")]
+        return templates.TemplateResponse(request, "label_batch.html", context, status_code=409)
+    except (PyPdfError, PdfiumError, OSError):
         context["merge_error"] = True
         context["can_open_originals"] = not originals and any(item["title"] for item in batch.labels)
         return templates.TemplateResponse(request, "label_batch.html", context, status_code=409)
