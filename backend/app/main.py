@@ -823,7 +823,8 @@ def print_log(request: Request, page: Annotated[int, Query(ge=1, le=1_000_000)] 
 
 
 @app.get("/print-jobs/{task_id}")
-def print_job_status(request: Request, task_id: UUID):
+def print_job_status(request: Request, task_id: UUID, account: AccountFilter | None = None,
+                     hide_printed: bool = False, hide_waiting: bool = True):
     with Session() as db:
         task = db.get(PrintTask, task_id)
         if task is None:
@@ -835,6 +836,7 @@ def print_job_status(request: Request, task_id: UUID):
         state = "unknown"
     return templates.TemplateResponse(request, "print_job.html", {
         "task": task, "batch": batch, "state": state, "ready": ready, "pending": pending, "failures": failures,
+        "back_url": orders_url(account or batch.account, hide_printed, hide_waiting),
         "title_error": state == "failed" and task.error == TITLE_SPACE_ERROR,
         "title_postings": [item["posting_number"] for item in batch.labels
                            if item.get("title_no_space") and item.get("posting_number")],
@@ -907,6 +909,24 @@ def change_order_waiting(request: Request, account_key: Account, posting_number:
         return RedirectResponse(orders_url(return_account, hide_printed, hide_waiting), status_code=303)
     return RedirectResponse(request.url_for("detail", account_key=account_key, posting_number=posting_number).path,
                             status_code=303)
+
+
+@app.post("/orders/{account_key}/{posting_number}/waiting-print")
+def print_waiting_label(request: Request, account_key: Account, posting_number: str,
+                        account: AccountFilter | None = None,
+                        hide_printed: bool = False, hide_waiting: bool = True):
+    require_dashboard_origin(request)
+    with write_transaction() as db:
+        key = (account_key, posting_number)
+        order = db.get(Order, key, with_for_update=True)
+        if order is None or order.status not in LABEL_STATUSES or not db.get(OrderWaiting, key):
+            raise HTTPException(409, "Отправление должно быть собрано и находиться в ожидании")
+        if db.get(LabelPrint, key):
+            raise HTTPException(409, "Этикетка уже отмечена как напечатанная")
+        job_id, _ = get_or_enqueue_label(db, order)
+        task_id = queue_print(db, account_key, [batch_item(order, job_id, False)])
+    query = orders_query(account or account_key, hide_printed, hide_waiting)
+    return RedirectResponse(f"/print-jobs/{task_id}?{query}", status_code=303)
 
 
 @app.post("/orders/{account_key}/{posting_number}/label")

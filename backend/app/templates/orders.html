@@ -51,6 +51,7 @@
           {% elif waiting %}
           <div class="assembly-actions">
             {{ waiting_badge }}
+            {% include "waiting_print.html" %}
             {{ waiting_control(order, waiting, return_account=account, hide_printed=hide_printed, hide_waiting=hide_waiting) }}
           </div>
           {% else %}

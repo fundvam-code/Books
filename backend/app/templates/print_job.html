@@ -8,7 +8,7 @@
 {% endif %}
 {% endblock %}
 {% block content %}
-<a class="back" href="{{ orders_url(batch.account) }}">← К отправлениям</a>
+<a class="back" href="{{ back_url }}">← К отправлениям</a>
 <div class="heading"><h1>Печать через агент</h1></div>
 <section class="panel" aria-live="polite">
   {% if state == 'submitted' %}

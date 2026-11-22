@@ -29,6 +29,7 @@
   {% if waiting %}
   <div class="assembly-actions">
     <span class="tag offline">В ожидании</span>
+    {% include "waiting_print.html" %}
     {{ waiting_control(order, waiting) }}
   </div>
   {% elif order.status in label_statuses %}
