@@ -6,7 +6,7 @@
 <script src="/static/label-window.js" defer></script>
 {% endblock %}
 {% block content %}
-<a class="back" href="/orders?account={{ order.account_key }}">← К отправлениям</a>
+<a class="back" href="{{ orders_url(account, hide_printed, hide_waiting) }}">← К отправлениям</a>
 <div data-order-label>
 {% set number = label_number(label_job_id, order.account_key) %}
 <div class="heading">

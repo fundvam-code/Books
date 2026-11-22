@@ -16,7 +16,7 @@
     <article class="card{% if ns.has_storage %} has-storage{% endif %}" data-order-label>
       <div class="card-title">
         <div>
-          <a href="/orders/{{ order.account_key }}/{{ order.posting_number }}">{{ order.posting_number }}</a>
+          <a href="/orders/{{ order.account_key }}/{{ order.posting_number }}?{{ orders_query(account, hide_printed, hide_waiting) }}">{{ order.posting_number }}</a>
           <div class="label-number" data-label-number{% if not number %} hidden{% endif %}>{% if number %}№ этикетки {{ number }}{% endif %}</div>
         </div>
         <span class="tag">{{ cabinet_names[order.account_key] }}</span>

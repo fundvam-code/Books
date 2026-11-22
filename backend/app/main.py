@@ -538,7 +538,8 @@ def stage_counts():
 
 
 @app.get("/orders/{account_key}/{posting_number}")
-def detail(request: Request, account_key: Account, posting_number: str):
+def detail(request: Request, account_key: Account, posting_number: str, account: AccountFilter | None = None,
+           hide_printed: bool = False, hide_waiting: bool = True):
     with Session() as db:
         row = db.execute(orders_with_labels().where(
             Order.account_key == account_key, Order.posting_number == posting_number,
@@ -550,6 +551,7 @@ def detail(request: Request, account_key: Account, posting_number: str):
     order, printed, job_id, waiting = row
     return templates.TemplateResponse(request, "detail.html", {
         "order": order, "data": order.data, "status_label": labels[order.status],
+        "account": account or account_key, "hide_printed": hide_printed, "hide_waiting": hide_waiting,
         "printed": printed, "label_job_id": job_id if pdf_is_available(job_id) else None,
         "waiting": waiting,
         "storage_match": StorageLookup(catalog.entries if catalog else []).match,
