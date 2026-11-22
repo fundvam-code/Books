@@ -80,7 +80,9 @@ h2 { font-size: 1.1rem; margin: 0 0 1rem; }
 .storage-location { display: block; margin-top: .15rem; overflow-wrap: anywhere; }
 .storage-location-hint { display: block; color: #894116; font-weight: 600; }
 .waiting-action { margin-top: .5rem; }
-.assembly-actions { display: flex; flex-wrap: wrap; align-items: center; gap: .4rem; margin-top: .6rem; }
+.assembly-actions { display: flex; align-items: center; gap: .4rem; margin-top: .6rem; }
+.assembly-actions > form { min-width: 0; }
+.assembly-actions .button { padding: .3rem .55rem; }
 .waiting-list { margin-top: 1rem; }
 .print-option { display: inline-block; margin-bottom: .4rem; }
 .orders-filter .print-option { margin-bottom: 0; }

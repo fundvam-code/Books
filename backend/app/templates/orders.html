@@ -34,7 +34,7 @@
       <div class="assembly-actions">
         {% if order.account_key in ozon_assembly_accounts %}
         <form action="/orders/{{ order.account_key }}/{{ order.posting_number }}/assembly?{{ orders_query(account, hide_printed, hide_waiting) }}" method="post">
-          <button class="button secondary" type="submit">{{ 'Собрать' if waiting else 'Отправить в сборку' }}</button>
+          <button class="button secondary" type="submit">Собрать</button>
         </form>
         {% if order.account_key in ozon_print_accounts %}
         <form action="/orders/{{ order.account_key }}/{{ order.posting_number }}/assembly?{{ orders_query(account, hide_printed, hide_waiting) }}" method="post">
