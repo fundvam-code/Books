@@ -116,7 +116,7 @@ class Wildberries:
             if not catalog_status and missing <= self.titles.keys():
                 catalog_status = "not_found"
         return {
-            "orders": [normalize(key, row, status, self.titles.get(str(row["nmId"]), ("", 0))[0])
+            "orders": [normalize(key, row, status, self.titles.get(str(row["nmId"]), ("", 0, None, None, None)))
                        for row, status in active],
             "covered_since": start.isoformat(),
             "catalog_status": catalog_status,
@@ -133,8 +133,15 @@ class Wildberries:
                 response = await self.request("POST", "/content/v2/get/cards/list", content=True, json={
                     "settings": {"cursor": {"limit": 100}, "filter": {"withPhoto": -1, "textSearch": nm}},
                 })
-                title = next((card["title"].strip() for card in response["cards"]
-                              if str(card.get("nmID")) == nm and isinstance(card.get("title"), str)), "")
+                card = next((card for card in response["cards"] if str(card.get("nmID")) == nm), {})
+                title = card.get("title", "").strip() if isinstance(card.get("title"), str) else ""
+                photos = card.get("photos") if isinstance(card.get("photos"), list) else []
+                photo = photos[0] if photos and isinstance(photos[0], dict) else {}
+                image_url = next((photo.get(key) for key in ("c246x328", "tm", "square", "big")
+                                  if isinstance(photo.get(key), str) and photo[key].startswith("https://")), None)
+                image_full_url = next((photo.get(key) for key in ("big", "hq", "c516x688", "c246x328")
+                                       if isinstance(photo.get(key), str) and photo[key].startswith("https://")), image_url)
+                created_at = card.get("createdAt") if isinstance(card.get("createdAt"), str) else None
             except (MarketplaceError, KeyError, TypeError, ValueError) as error:
                 code = getattr(error, "code", "response")
                 self.catalog_failure = "denied" if code == "access" else "unavailable"
@@ -143,7 +150,7 @@ class Wildberries:
                 log.warning("Не удалось получить названия товаров Wildberries (%s)", code)
                 return
             self.catalog_failure = None
-            self.titles[nm] = (title, monotonic() + (3600 if title else 600))
+            self.titles[nm] = (title, monotonic() + (3600 if title else 600), image_url, image_full_url, created_at)
 
     async def find_open_supply(self):
         cursor = 0
@@ -222,7 +229,7 @@ class Wildberries:
         return data, " ".join(parts)
 
 
-def normalize(key, row, status, title):
+def normalize(key, row, status, card):
     price = row.get("convertedPrice")
     currency = row.get("convertedCurrencyCode")
     currency = "₽" if currency == 643 else currency
@@ -236,10 +243,13 @@ def normalize(key, row, status, title):
         "delivery_method": "FBS",
         "supply_id": row.get("supplyId"),
         "products": [{
-            "name": title,
+            "name": card[0],
             "offer_id": row["article"],
             "sku": str(row["nmId"]),
             "quantity": 1,
             "price": f"{Decimal(price) / 100:.2f} {currency or ''}".rstrip() if type(price) is int else None,
+            "image_url": card[2],
+            "image_full_url": card[3],
+            "listing_created_at": card[4],
         }],
     }

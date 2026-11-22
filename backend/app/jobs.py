@@ -197,7 +197,14 @@ def apply_snapshot(db, key, result):
         status=row.status, data=row.model_dump(mode="json"),
     ) for row in rows.values())
     cabinet.updated_at = now()
-    cabinet.error = catalog_error(result) if key == WB_ACCOUNT else None
+    if key == WB_ACCOUNT:
+        cabinet.error = catalog_error(result)
+    elif result.product_info_status == "denied":
+        cabinet.error = "Для фото и даты карточки Ozon дайте агенту доступ Product на чтение."
+    elif result.product_info_status == "unavailable":
+        cabinet.error = "Фото и даты карточек Ozon временно не обновились; заказы загружены."
+    else:
+        cabinet.error = None
 
 
 def catalog_error(result):

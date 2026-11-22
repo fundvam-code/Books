@@ -62,7 +62,21 @@ def format_msk(value: datetime | str | None) -> str:
     return value.astimezone(MSK).strftime("%d.%m.%Y %H:%M %Z")
 
 
+def format_date_msk(value: datetime | str | None) -> str:
+    if not value:
+        return "—"
+    if isinstance(value, str):
+        try:
+            value = datetime.fromisoformat(value)
+        except ValueError:
+            return "—"
+    if value.tzinfo is None:
+        value = value.replace(tzinfo=UTC)
+    return value.astimezone(MSK).strftime("%d.%m.%Y")
+
+
 templates.env.filters["msk"] = format_msk
+templates.env.filters["date_msk"] = format_date_msk
 
 
 def orders_url(account: str, hide_printed: bool = False, hide_waiting: bool = True) -> str:

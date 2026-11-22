@@ -21,12 +21,9 @@
         </div>
         <span class="tag">{{ cabinet_names[order.account_key] }}</span>
       </div>
-      {% if order.data.shipment_date %}
-      <p class="due">Отгрузка {{ order.data.shipment_date|msk }}</p>
-      {% endif %}
       <ul class="products">
         {% for product in order.data.products[:3] %}
-        <li><span>{{ product.name or product.offer_id or 'Товар' }}{% include "product_storage.html" %}</span><strong>× {{ product.quantity }}</strong></li>
+        <li><span class="product-summary">{% include "product_cover.html" %}<span>{{ product.name or product.offer_id or 'Товар' }}{% include "product_storage.html" %}</span></span><strong>× {{ product.quantity }}</strong></li>
         {% endfor %}
         {% if order.data.products|length > 3 %}<li>Ещё {{ order.data.products|length - 3 }}</li>{% endif %}
       </ul>

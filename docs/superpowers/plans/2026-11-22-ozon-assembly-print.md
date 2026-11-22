@@ -49,3 +49,23 @@
 - [ ] Add the exact two requested buttons to Ozon orders in `awaiting_packaging`.
 - [ ] Add CSRF/Origin-protected form handling and an idempotent progress page for assembly, label, and print state.
 - [ ] Show errors without marking printed; refresh the board when the workflow completes.
+
+### Task 4: Remove shipment date from cards
+
+**Files:** `backend/app/templates/orders.html`
+
+- [ ] Remove the shipment-date paragraph from order cards without changing detail-page dates.
+
+### Task 5: Add book covers to cards
+
+**Files:** `agent/app/ozon.py`, `agent/app/wildberries.py`, `backend/app/schemas.py`, `backend/app/main.py`, `backend/app/jobs.py`, `backend/app/templates/orders.html`, `backend/app/templates/product_storage.html`, `backend/app/static/dashboard.css`
+
+- [ ] Enrich Ozon posting products from Product Info by SKU with the primary image URL and listing creation time; treat permission or lookup failures as optional metadata so order sync still succeeds.
+- [ ] Include WB card photo and `createdAt` alongside title in the existing Content API cache.
+- [ ] Render a small cover for products with an image URL and enlarge it on hover without obscuring other card actions.
+
+### Task 6: Show listing creation date in order details
+
+**Files:** `backend/app/main.py`, `backend/app/templates/detail.html`
+
+- [ ] Add a date-only MSK display for each product's listing creation time in the detailed order view.

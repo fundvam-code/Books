@@ -15,6 +15,9 @@ class Product(BaseModel):
     sku: str = ""
     quantity: int = Field(ge=0)
     price: str | None = None
+    image_url: str | None = None
+    image_full_url: str | None = None
+    listing_created_at: str | None = None
 
 
 class Posting(BaseModel):
@@ -44,6 +47,7 @@ class SyncResult(BaseModel):
     covered_since: datetime
     catalog_access_denied: bool = False
     catalog_status: Literal["denied", "unavailable", "not_found"] | None = None
+    product_info_status: Literal["denied", "unavailable"] | None = None
 
 
 class Completion(BaseModel):

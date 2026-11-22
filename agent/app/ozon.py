@@ -76,7 +76,35 @@ class Ozon:
             })
             if posting["status"] in ACTIVE:
                 orders[number] = normalize(key, posting)
-        return {"orders": list(orders.values()), "covered_since": start.isoformat()}
+        product_info_status = None
+        offer_ids = sorted({product["offer_id"] for order in orders.values() for product in order["products"]
+                            if product["offer_id"]})
+        metadata = {}
+        try:
+            for offset in range(0, len(offer_ids), 1000):
+                reply = await self.post("/v3/product/info/list", {"offer_id": offer_ids[offset:offset + 1000]})
+                items = reply.get("items")
+                if not isinstance(items, list):
+                    raise OzonError("response", True)
+                for item in items:
+                    if isinstance(item, dict) and isinstance(item.get("offer_id"), str):
+                        images = item.get("images") if isinstance(item.get("images"), list) else []
+                        primary = item.get("primary_image")
+                        image = primary if isinstance(primary, str) and primary.startswith("https://") else next(
+                            (url for url in images if isinstance(url, str) and url.startswith("https://")), None,
+                        )
+                        full = next((url for url in images if isinstance(url, str) and url.startswith("https://")), image)
+                        metadata[item["offer_id"]] = {
+                            "image_url": image, "image_full_url": full,
+                            "listing_created_at": item.get("created_at") if isinstance(item.get("created_at"), str) else None,
+                        }
+        except (OzonError, KeyError, TypeError, ValueError) as error:
+            product_info_status = "denied" if getattr(error, "code", None) == "access" else "unavailable"
+        for order in orders.values():
+            for product in order["products"]:
+                product.update(metadata.get(product["offer_id"], {}))
+        return {"orders": list(orders.values()), "covered_since": start.isoformat(),
+                "product_info_status": product_info_status}
 
     async def create_label(self, number):
         reply = await self.post("/v3/posting/fbs/package-label/create", {"posting_numbers": [number]}, label=True)
@@ -186,5 +214,8 @@ def normalize(key, row):
             "sku": value_text(product.get("sku")),
             "quantity": int(product["quantity"]),
             "price": format_price(product.get("price"), product.get("currency_code")),
+            "image_url": None,
+            "image_full_url": None,
+            "listing_created_at": None,
         } for product in row["products"]],
     }
