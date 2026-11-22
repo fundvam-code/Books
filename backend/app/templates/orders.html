@@ -32,11 +32,11 @@
       {% elif order.status == 'awaiting_packaging' and order.account_key in ('1', '2') %}
       <div class="assembly-actions">
         {% if order.account_key in ozon_assembly_accounts %}
-        <form action="/orders/{{ order.account_key }}/{{ order.posting_number }}/assembly" method="post">
+        <form action="/orders/{{ order.account_key }}/{{ order.posting_number }}/assembly?{{ orders_query(account, hide_printed, hide_waiting) }}" method="post">
           <button class="button secondary" type="submit">Отправить в сборку</button>
         </form>
         {% if order.account_key in ozon_print_accounts %}
-        <form action="/orders/{{ order.account_key }}/{{ order.posting_number }}/assembly" method="post">
+        <form action="/orders/{{ order.account_key }}/{{ order.posting_number }}/assembly?{{ orders_query(account, hide_printed, hide_waiting) }}" method="post">
           <input type="hidden" name="print_after" value="true">
           <button class="button" type="submit">Собрать и напечатать</button>
         </form>

@@ -79,16 +79,21 @@ templates.env.filters["msk"] = format_msk
 templates.env.filters["date_msk"] = format_date_msk
 
 
-def orders_url(account: str, hide_printed: bool = False, hide_waiting: bool = True) -> str:
+def orders_query(account: str, hide_printed: bool = False, hide_waiting: bool = True) -> str:
     options = {"account": account}
     if hide_printed:
         options["hide_printed"] = "true"
     if not hide_waiting:
         options["hide_waiting"] = "false"
-    return "/orders?" + urlencode(options)
+    return urlencode(options)
+
+
+def orders_url(account: str, hide_printed: bool = False, hide_waiting: bool = True) -> str:
+    return "/orders?" + orders_query(account, hide_printed, hide_waiting)
 
 
 templates.env.globals["orders_url"] = orders_url
+templates.env.globals["orders_query"] = orders_query
 
 
 async def scheduler():
@@ -578,7 +583,8 @@ def ozon_capability_online(db, account_key, *, printing=False):
 
 
 @app.get("/ozon-assembly/{job_id}")
-def ozon_assembly_status(request: Request, job_id: UUID):
+def ozon_assembly_status(request: Request, job_id: UUID, account: AccountFilter | None = None,
+                         hide_printed: bool = False, hide_waiting: bool = True):
     with Session() as db:
         job = db.get(Job, job_id)
         action = db.get(OzonAssembly, job_id) if job and job.kind == OZON_ASSEMBLY_KIND else None
@@ -594,7 +600,7 @@ def ozon_assembly_status(request: Request, job_id: UUID):
                 title = next((item["book_title"] for item in batch.labels if item.get("book_title")), "")
     return templates.TemplateResponse(request, "ozon_assembly_status.html", {
         "job": job, "action": action, "label_job": label_job, "print_task": print_task,
-        "title": title,
+        "title": title, "back_url": orders_url(account or job.account_key, hide_printed, hide_waiting),
     })
 
 
@@ -612,7 +618,8 @@ def wb_assembly_form(request: Request, posting_number: str):
 
 @app.post("/orders/w/{posting_number}/assembly")
 def request_wb_assembly(request: Request, posting_number: str,
-                        print_after: Annotated[bool, Form()] = False):
+                        print_after: Annotated[bool, Form()] = False, account: AccountFilter = WB_ACCOUNT,
+                        hide_printed: bool = False, hide_waiting: bool = True):
     if request.headers.get("origin") != "https://" + os.environ["PUBLIC_DOMAIN"]:
         raise HTTPException(403, "Откройте форму перевода на сборку в дашборде")
     with write_transaction() as db:
@@ -635,13 +642,14 @@ def request_wb_assembly(request: Request, posting_number: str,
                 raise HTTPException(409, "Перевод этого задания уже запрошен")
             if db.get(WbAssembly, job_id).print_after != print_after:
                 raise HTTPException(409, "Для заказа уже выполняется другое действие")
-    return RedirectResponse(f"/wb-assembly/{job_id}", status_code=303)
+    return RedirectResponse(f"/wb-assembly/{job_id}?{orders_query(account, hide_printed, hide_waiting)}", status_code=303)
 
 
 # Register the specific Wildberries route before the account route.
 @app.post("/orders/{account_key}/{posting_number}/assembly")
 def request_ozon_assembly(request: Request, account_key: Account, posting_number: str,
-                          print_after: Annotated[bool, Form()] = False):
+                          print_after: Annotated[bool, Form()] = False, account: AccountFilter | None = None,
+                          hide_printed: bool = False, hide_waiting: bool = True):
     require_dashboard_origin(request)
     if account_key not in OZON_ACCOUNTS:
         raise HTTPException(404, "Отправление Ozon не найдено")
@@ -668,11 +676,13 @@ def request_ozon_assembly(request: Request, account_key: Account, posting_number
             action = db.get(OzonAssembly, job_id)
             if action is None or action.print_after != print_after:
                 raise HTTPException(409, "Для заказа уже выполняется другое действие")
-    return RedirectResponse(f"/ozon-assembly/{job_id}", status_code=303)
+    query = orders_query(account or account_key, hide_printed, hide_waiting)
+    return RedirectResponse(f"/ozon-assembly/{job_id}?{query}", status_code=303)
 
 
 @app.get("/wb-assembly/{job_id}")
-def wb_assembly_status(request: Request, job_id: UUID):
+def wb_assembly_status(request: Request, job_id: UUID, account: AccountFilter = WB_ACCOUNT,
+                       hide_printed: bool = False, hide_waiting: bool = True):
     with Session() as db:
         job = db.get(Job, job_id)
         action = db.get(WbAssembly, job_id) if job and job.kind == WB_ASSEMBLY_KIND else None
@@ -685,6 +695,7 @@ def wb_assembly_status(request: Request, job_id: UUID):
         _, pending, failures = batch_versions(db, batch, LABEL_DIR) if batch else (0, 0, [])
     return templates.TemplateResponse(request, "wb_assembly_status.html", {
         "job": job, "action": action, "task": task, "title": title, "pending": pending, "failures": failures,
+        "back_url": orders_url(account, hide_printed, hide_waiting),
     })
 
 

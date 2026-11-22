@@ -6,7 +6,7 @@
 {% endif %}
 {% endblock %}
 {% block content %}
-<a class="back" href="/orders?account={{ job.account_key }}">← К заказам</a>
+<a class="back" href="{{ back_url }}">← К заказам</a>
 <div class="heading"><h1>{% if action.print_after %}Собрать и напечатать{% else %}Отправить в сборку{% endif %}</h1></div>
 <section class="panel" aria-live="polite">
   <dl class="details">
