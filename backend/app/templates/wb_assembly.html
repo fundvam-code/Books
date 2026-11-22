@@ -7,7 +7,7 @@
   <p>Задание Wildberries № {{ order.posting_number }}{% if book_title(order) %} · {{ book_title(order) }}{% endif %}</p>
   {% if enabled %}
   <p>Агент сам найдёт открытую поставку Wildberries.</p>
-  <form action="/orders/w/{{ order.posting_number }}/assembly" method="post">
+  <form action="/orders/w/{{ order.posting_number }}/assembly?{{ return_query }}" method="post">
     <button class="button" type="submit">Подтвердить перенос</button>
   </form>
   {% else %}

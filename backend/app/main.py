@@ -260,14 +260,14 @@ def complete_job(job_id: UUID, body: Completion, auth: Agent, token: Lease):
         if body.status == "succeeded":
             if job.kind == WB_ASSEMBLY_KIND and db.get(WbAssembly, job.id).started_at is not None:
                 action = db.get(WbAssembly, job.id)
-                if action.print_after:
-                    order = db.get(Order, (WB_ACCOUNT, job.posting_number), with_for_update=True)
-                    if order and (
-                        order.status == "wb_new" or
-                        (order.status == "wb_confirm" and order.data.get("supply_id") == action.supply_id)
-                    ):
-                        order.status = "wb_confirm"
-                        order.data = {**order.data, "status": "wb_confirm", "supply_id": action.supply_id}
+                order = db.get(Order, (WB_ACCOUNT, job.posting_number), with_for_update=True)
+                if order and (
+                    order.status == "wb_new" or
+                    (order.status == "wb_confirm" and order.data.get("supply_id") == action.supply_id)
+                ):
+                    order.status = "wb_confirm"
+                    order.data = {**order.data, "status": "wb_confirm", "supply_id": action.supply_id}
+                    if action.print_after:
                         label_job_id, _ = get_or_enqueue_label(db, order)
                         if label_job_id is not None:
                             action.print_task_id = queue_print(db, WB_ACCOUNT, [batch_item(order, label_job_id, False)])
@@ -307,6 +307,11 @@ def complete_job(job_id: UUID, body: Completion, auth: Agent, token: Lease):
                     raise HTTPException(422, str(error)) from error
             else:
                 raise HTTPException(422, "Ожидался снимок заказов")
+            if job.kind in (WB_ASSEMBLY_KIND, OZON_ASSEMBLY_KIND):
+                db.execute(delete(OrderWaiting).where(
+                    OrderWaiting.account_key == job.account_key,
+                    OrderWaiting.posting_number == job.posting_number,
+                ))
             job.state = "done"
             job.lease_until = None
             job.error = None
@@ -605,14 +610,15 @@ def ozon_assembly_status(request: Request, job_id: UUID, account: AccountFilter 
 
 
 @app.get("/orders/w/{posting_number}/assembly")
-def wb_assembly_form(request: Request, posting_number: str):
+def wb_assembly_form(request: Request, posting_number: str, account: AccountFilter = WB_ACCOUNT,
+                     hide_printed: bool = False, hide_waiting: bool = True):
     with Session() as db:
         order = db.get(Order, (WB_ACCOUNT, posting_number))
         if order is None or order.status != "wb_new":
             raise HTTPException(404, "Новое задание Wildberries не найдено")
         enabled = wb_write_online(db)
     return templates.TemplateResponse(request, "wb_assembly.html", {
-        "order": order, "enabled": enabled,
+        "order": order, "enabled": enabled, "return_query": orders_query(account, hide_printed, hide_waiting),
     })
 
 
@@ -626,8 +632,6 @@ def request_wb_assembly(request: Request, posting_number: str,
         order = db.get(Order, (WB_ACCOUNT, posting_number), with_for_update=True)
         if order is None or order.status != "wb_new":
             raise HTTPException(409, "Задание больше не находится в «Новых»")
-        if db.get(OrderWaiting, (WB_ACCOUNT, posting_number)):
-            raise HTTPException(409, "Сначала верните отправление из ожидания")
         if not wb_write_online(db):
             raise HTTPException(409, "Агент с настроенным WB_WRITE_TOKEN сейчас недоступен")
         job_id = enqueue(db, WB_ASSEMBLY_KIND, WB_ACCOUNT, posting_number)
@@ -657,8 +661,6 @@ def request_ozon_assembly(request: Request, account_key: Account, posting_number
         order = db.get(Order, (account_key, posting_number), with_for_update=True)
         if order is None or order.status != "awaiting_packaging":
             raise HTTPException(409, "Заказ больше не ожидает сборки")
-        if db.get(OrderWaiting, (account_key, posting_number)):
-            raise HTTPException(409, "Сначала верните отправление из ожидания")
         if not ozon_capability_online(db, account_key):
             raise HTTPException(409, "Локальный агент Ozon с правом сборки сейчас не в сети")
         if print_after and not ozon_capability_online(db, account_key, printing=True):
