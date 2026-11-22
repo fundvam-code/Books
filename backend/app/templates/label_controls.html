@@ -1,4 +1,4 @@
-{% macro label_controls(order, printed, label_job_id, return_account=none, hide_printed=false) %}
+{% macro label_controls(order, printed, label_job_id, return_account=none, hide_printed=false, hide_waiting=true) %}
 {% set order_path = '/orders/' ~ order.account_key ~ '/' ~ order.posting_number %}
 <div class="label-status">
   <span class="tag {{ 'online' if printed else 'offline' }}">{{ 'Этикетка напечатана' if printed else 'Печать не отмечена' }}</span>
@@ -24,7 +24,17 @@
   <form action="{{ order_path }}/label-print/{{ 'unprinted' if printed else 'printed' }}" method="post">
     {% if return_account %}<input type="hidden" name="return_account" value="{{ return_account }}">{% endif %}
     {% if hide_printed %}<input type="hidden" name="hide_printed" value="true">{% endif %}
+    {% if not hide_waiting %}<input type="hidden" name="hide_waiting" value="false">{% endif %}
     <button class="button secondary" type="submit">{{ 'Снять отметку о печати' if printed else 'Отметить как напечатанную' }}</button>
   </form>
 </div>
+{% endmacro %}
+
+{% macro waiting_control(order, waiting, return_account=none, hide_printed=false, hide_waiting=true) %}
+<form class="waiting-action" action="/orders/{{ order.account_key }}/{{ order.posting_number }}/waiting/{{ 'release' if waiting else 'hold' }}" method="post">
+  {% if return_account %}<input type="hidden" name="return_account" value="{{ return_account }}">{% endif %}
+  {% if hide_printed %}<input type="hidden" name="hide_printed" value="true">{% endif %}
+  {% if not hide_waiting %}<input type="hidden" name="hide_waiting" value="false">{% endif %}
+  <button class="button secondary" type="submit">{{ 'Вернуть к отгрузке' if waiting else 'Перенести в ожидание' }}</button>
+</form>
 {% endmacro %}

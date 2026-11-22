@@ -1,6 +1,8 @@
-document.getElementById("hide-printed").addEventListener("change", (event) => {
-    event.target.form.requestSubmit();
-});
+for (const selector of ["hide-printed", "hide-waiting"]) {
+    document.getElementById(selector).addEventListener("change", (event) => {
+        event.target.form.requestSubmit();
+    });
+}
 
 const shiftLoading = document.querySelector("[data-shift-loading]");
 setTimeout(() => refreshLabelPage(), shiftLoading ? 3000 : 5 * 60 * 1000);

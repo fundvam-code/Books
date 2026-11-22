@@ -44,6 +44,13 @@ class LabelPrint(Base):
     posting_number: Mapped[str] = mapped_column(String(80), primary_key=True)
 
 
+class OrderWaiting(Base):
+    __tablename__ = "order_waiting"
+
+    account_key: Mapped[str] = mapped_column(String(1), primary_key=True)
+    posting_number: Mapped[str] = mapped_column(String(80), primary_key=True)
+
+
 class LabelBatch(Base):
     __tablename__ = "label_batches"
 

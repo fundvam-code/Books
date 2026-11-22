@@ -19,10 +19,10 @@ from PIL import Image
 from pypdf import PdfWriter
 from pypdf.errors import PyPdfError
 from pypdfium2 import PdfiumError
-from sqlalchemy import and_, delete, desc, func, select
+from sqlalchemy import and_, delete, desc, func, or_, select
 from sqlalchemy.dialects.postgresql import insert
 
-from .db import (Cabinet, Heartbeat, Job, LabelBatch, LabelPrint, Order, PrintLog, PrintTask, Session, Shift,
+from .db import (Cabinet, Heartbeat, Job, LabelBatch, LabelPrint, Order, OrderWaiting, PrintLog, PrintTask, Session, Shift,
                  write_transaction)
 from .jobs import (ACTIVE, LABEL_STATUSES, OZON_ACCOUNTS, OZON_STATUSES, PDF_LIMIT, WB_ACCOUNT, WB_BOARD_STATUSES,
                    ShiftConflict, apply_snapshot, claim, enqueue, fail_job, initialize, maintain, now, start_shift)
@@ -59,10 +59,12 @@ def format_msk(value: datetime | str | None) -> str:
 templates.env.filters["msk"] = format_msk
 
 
-def orders_url(account: str, hide_printed: bool = False) -> str:
+def orders_url(account: str, hide_printed: bool = False, hide_waiting: bool = True) -> str:
     options = {"account": account}
     if hide_printed:
         options["hide_printed"] = "true"
+    if not hide_waiting:
+        options["hide_waiting"] = "false"
     return "/orders?" + urlencode(options)
 
 
@@ -272,9 +274,13 @@ def orders_with_labels():
         Order,
         LabelPrint.posting_number.is_not(None),
         ready_label_id(Order.account_key, Order.posting_number).scalar_subquery(),
+        OrderWaiting.posting_number.is_not(None),
     ).outerjoin(LabelPrint, and_(
         LabelPrint.account_key == Order.account_key,
         LabelPrint.posting_number == Order.posting_number,
+    )).outerjoin(OrderWaiting, and_(
+        OrderWaiting.account_key == Order.account_key,
+        OrderWaiting.posting_number == Order.posting_number,
     ))
 
 
@@ -286,9 +292,13 @@ def has_printed_label():
 
 
 def unprinted_label_counts(db, accounts):
+    waiting = select(OrderWaiting.posting_number).where(
+        OrderWaiting.account_key == Order.account_key,
+        OrderWaiting.posting_number == Order.posting_number,
+    ).exists()
     counts = dict(db.execute(
         select(Order.account_key, func.count()).where(
-            Order.account_key.in_(accounts), Order.status.in_(LABEL_STATUSES), ~has_printed_label(),
+            Order.account_key.in_(accounts), Order.status.in_(LABEL_STATUSES), ~has_printed_label(), ~waiting,
         ).group_by(Order.account_key)
     ).all())
     return {**{key: counts.get(key, 0) for key in accounts}, "all": sum(counts.values())}
@@ -318,7 +328,8 @@ def get_or_enqueue_label(db, order):
 
 
 @app.get("/orders")
-def orders(request: Request, account: str = "all", hide_printed: bool = False, shift_started: UUID | None = None):
+def orders(request: Request, account: str = "all", hide_printed: bool = False, shift_started: UUID | None = None,
+           hide_waiting: bool = True):
     with Session() as db:
         registered = {cabinet.key: cabinet for cabinet in db.scalars(select(Cabinet).order_by(Cabinet.key))}
         if account != "all" and account not in registered:
@@ -332,12 +343,21 @@ def orders(request: Request, account: str = "all", hide_printed: bool = False, s
         unprinted_counts = unprinted_label_counts(db, tuple(registered))
         query = orders_with_labels().where(Order.account_key.in_(keys), Order.status.in_(tuple(labels)))
         if hide_printed:
-            query = query.where(LabelPrint.posting_number.is_(None))
+            query = query.where(or_(LabelPrint.posting_number.is_(None), OrderWaiting.posting_number.is_not(None)))
         records = db.execute(query).all()
     records.sort(key=lambda row: (row[0].data.get("shipment_date") or "~", row[0].posting_number))
     orders_by_status = {status: [] for status in labels}
-    for order, printed, job_id in records:
-        orders_by_status[order.status].append((order, printed, job_id if pdf_is_available(job_id) else None))
+    waiting_orders = []
+    has_printable = False
+    for order, printed, job_id, waiting in records:
+        printable = order.status in LABEL_STATUSES
+        waiting = waiting and printable
+        card = (order, printed, job_id if pdf_is_available(job_id) else None, waiting)
+        if waiting:
+            waiting_orders.append(card)
+        if (not waiting or not hide_waiting) and (not printed or not hide_printed):
+            orders_by_status[order.status].append(card)
+            has_printable |= printable and not waiting
     boards = []
     if any(key in OZON_ACCOUNTS for key in keys):
         boards.append(("Ozon", [(labels[status], orders_by_status[status]) for status in OZON_STATUSES]))
@@ -352,9 +372,11 @@ def orders(request: Request, account: str = "all", hide_printed: bool = False, s
             *((key, cabinet_names[key], unprinted_counts[key]) for key in registered),
         ],
         "hide_printed": hide_printed,
+        "hide_waiting": hide_waiting,
+        "waiting_orders": waiting_orders,
         "recent_shift": recent_shift,
         "shift_loading": recent_shift and any(cabinet.updated_at is None and not cabinet.error for cabinet in cabinets),
-        "has_printable": any(orders_by_status[status] for status in LABEL_STATUSES),
+        "has_printable": has_printable,
         "online": bool(seen and seen.seen_at >= now() - timedelta(seconds=120)),
     })
 
@@ -375,10 +397,11 @@ def detail(request: Request, account_key: Account, posting_number: str):
         )).one_or_none()
     if row is None:
         raise HTTPException(404, "Активное отправление не найдено")
-    order, printed, job_id = row
+    order, printed, job_id, waiting = row
     return templates.TemplateResponse(request, "detail.html", {
         "order": order, "data": order.data, "status_label": labels[order.status],
         "printed": printed, "label_job_id": job_id if pdf_is_available(job_id) else None,
+        "waiting": waiting and order.status in LABEL_STATUSES,
     })
 
 
@@ -520,12 +543,15 @@ def print_job_status(request: Request, task_id: UUID):
 def mark_label_print(request: Request, account_key: Account, posting_number: str,
                      state: Literal["printed", "unprinted"],
                      return_account: Annotated[AccountFilter | None, Form()] = None,
-                     hide_printed: Annotated[bool, Form()] = False):
+                     hide_printed: Annotated[bool, Form()] = False,
+                     hide_waiting: Annotated[bool, Form()] = True):
     require_dashboard_origin(request)
     with write_transaction() as db:
         order = db.get(Order, (account_key, posting_number), with_for_update=True)
         if order is None or order.status not in LABEL_STATUSES:
             raise HTTPException(409, "Отметка о печати доступна после начала работы с этикеткой")
+        if db.get(OrderWaiting, (account_key, posting_number)):
+            raise HTTPException(409, "Сначала верните отправление из ожидания")
         if state == "printed":
             db.execute(insert(LabelPrint).values(
                 account_key=account_key, posting_number=posting_number,
@@ -536,9 +562,43 @@ def mark_label_print(request: Request, account_key: Account, posting_number: str
                 LabelPrint.posting_number == posting_number,
             ))
     if return_account:
-        return RedirectResponse(orders_url(return_account, hide_printed), status_code=303)
+        return RedirectResponse(orders_url(return_account, hide_printed, hide_waiting), status_code=303)
     detail_url = request.url_for("detail", account_key=account_key, posting_number=posting_number)
     return RedirectResponse(detail_url.path, status_code=303)
+
+
+@app.post("/orders/{account_key}/{posting_number}/waiting/{state}")
+def change_order_waiting(request: Request, account_key: Account, posting_number: str,
+                         state: Literal["hold", "release"],
+                         return_account: Annotated[AccountFilter | None, Form()] = None,
+                         hide_printed: Annotated[bool, Form()] = False,
+                         hide_waiting: Annotated[bool, Form()] = True):
+    require_dashboard_origin(request)
+    with write_transaction() as db:
+        order = db.get(Order, (account_key, posting_number), with_for_update=True)
+        if order is None or order.status not in LABEL_STATUSES:
+            raise HTTPException(409, "Отправление больше не ожидает отгрузки")
+        if state == "hold":
+            job_ids = {str(job_id) for job_id in db.scalars(select(Job.id).where(
+                Job.account_key == account_key, Job.posting_number == posting_number, Job.kind == "label_pdf",
+            ))}
+            if job_ids:
+                active_batches = db.scalars(select(LabelBatch.labels).join(PrintTask).where(
+                    PrintTask.state.in_(("pending", "leased", "sending")),
+                ))
+                if any(item["job_id"] in job_ids for batch in active_batches for item in batch):
+                    raise HTTPException(409, "Дождитесь завершения печати и повторите перенос")
+            db.execute(insert(OrderWaiting).values(
+                account_key=account_key, posting_number=posting_number,
+            ).on_conflict_do_nothing())
+        else:
+            db.execute(delete(OrderWaiting).where(
+                OrderWaiting.account_key == account_key, OrderWaiting.posting_number == posting_number,
+            ))
+    if return_account:
+        return RedirectResponse(orders_url(return_account, hide_printed, hide_waiting), status_code=303)
+    return RedirectResponse(request.url_for("detail", account_key=account_key, posting_number=posting_number).path,
+                            status_code=303)
 
 
 @app.post("/orders/{account_key}/{posting_number}/label")
@@ -550,6 +610,8 @@ def request_label(request: Request, account_key: Account, posting_number: str,
         order = db.get(Order, (account_key, posting_number), with_for_update=True)
         if order is None or order.status not in LABEL_STATUSES:
             raise HTTPException(409, "Этикетка недоступна на текущем этапе")
+        if db.get(OrderWaiting, (account_key, posting_number)):
+            raise HTTPException(409, "Сначала верните отправление из ожидания")
         job_id, ready = get_or_enqueue_label(db, order)
         if autoprint and request.headers.get("accept") != "application/json":
             task_id = queue_print(db, account_key, [batch_item(order, job_id, with_title)])
@@ -565,7 +627,7 @@ def request_label(request: Request, account_key: Account, posting_number: str,
 @app.post("/label-batches")
 def request_label_batch(request: Request, account: Annotated[AccountFilter, Form()] = "all",
                         with_title: Annotated[bool, Form()] = False, autoprint: Annotated[bool, Form()] = False,
-                        hide_printed: Annotated[bool, Form()] = False):
+                        hide_printed: Annotated[bool, Form()] = False, show_waiting: Annotated[bool, Form()] = False):
     require_dashboard_origin(request)
     with write_transaction() as db:
         query = select(Order).where(Order.status.in_(LABEL_STATUSES))
@@ -574,6 +636,8 @@ def request_label_batch(request: Request, account: Annotated[AccountFilter, Form
         if hide_printed:
             query = query.where(~has_printed_label())
         orders = db.scalars(query.order_by(Order.account_key, Order.posting_number).with_for_update()).all()
+        waiting = set(db.execute(select(OrderWaiting.account_key, OrderWaiting.posting_number)))
+        orders = [order for order in orders if (order.account_key, order.posting_number) not in waiting]
         if not orders:
             raise HTTPException(409, "Нет отправлений с доступными этикетками")
         items = []
@@ -584,22 +648,24 @@ def request_label_batch(request: Request, account: Annotated[AccountFilter, Form
             task_id = queue_print(db, account, items)
             return RedirectResponse(f"/print-jobs/{task_id}", status_code=303)
         batch_id = create_batch(db, account, items)
-    return RedirectResponse(label_url(f"/label-batches/{batch_id}", hide_printed=hide_printed), status_code=303)
+    return RedirectResponse(label_url(f"/label-batches/{batch_id}", hide_printed=hide_printed,
+                                      show_waiting=show_waiting), status_code=303)
 
 
 @app.get("/label-batches/{batch_id}")
 def label_batch(request: Request, batch_id: UUID, originals: bool = False, autoprint: bool = False,
-                hide_printed: bool = False):
+                hide_printed: bool = False, show_waiting: bool = False):
     with Session() as db:
         batch = db.get(LabelBatch, batch_id)
         if batch is None or batch.expires_at <= now():
             raise HTTPException(404, "Партия этикеток недоступна")
         ready, pending, failures = batch_versions(db, batch, LABEL_DIR)
     context = {"batch": batch, "ready": ready, "failures": failures,
-               "pending": pending, "autoprint": autoprint, "hide_printed": hide_printed,
-               "status_url": label_url(f"/label-batches/{batch_id}", autoprint=autoprint, hide_printed=hide_printed),
+               "pending": pending, "autoprint": autoprint, "hide_printed": hide_printed, "show_waiting": show_waiting,
+               "status_url": label_url(f"/label-batches/{batch_id}", autoprint=autoprint, hide_printed=hide_printed,
+                                       show_waiting=show_waiting),
                "originals_url": label_url(f"/label-batches/{batch_id}", originals=True,
-                                          autoprint=autoprint, hide_printed=hide_printed)}
+                                          autoprint=autoprint, hide_printed=hide_printed, show_waiting=show_waiting)}
     if pending or failures:
         return templates.TemplateResponse(request, "label_batch.html", context)
     try:

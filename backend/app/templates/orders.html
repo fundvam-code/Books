@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% from "label_controls.html" import label_controls %}
+{% from "label_controls.html" import label_controls, waiting_control %}
 {% block title %}{{ active_tab_title }} ({{ active_tab_count }}) — Заказы FBS{% endblock %}
 {% block head %}
 <script src="/static/orders.js" defer></script>
@@ -7,53 +7,7 @@
 <script src="/static/label-window.js" defer></script>
 {% endblock %}
 {% block content %}
-<div class="heading">
-  <h1>Активные отправления</h1>
-  <span class="connection {{ 'online' if online else 'offline' }}">Агент {{ 'в сети' if online else 'не в сети' }}</span>
-</div>
-<nav class="tabs" aria-label="Кабинеты">
-  {% for key, title, count in tabs %}
-  <a href="{{ orders_url(key, hide_printed) }}"{% if key == account %} aria-current="page"{% endif %}>{{ title }} (<span data-print-count="{{ key }}">{{ count }}</span>)</a>
-  {% endfor %}
-</nav>
-<section class="sync" aria-label="Синхронизация">
-  {% for cabinet in cabinets %}
-  <div>
-    <strong>{{ cabinet_names[cabinet.key] }}</strong>
-    {% if cabinet.updated_at %}<span>Обновлён {{ cabinet.updated_at|msk }}</span>
-    {% else %}<span>Ожидаем первую загрузку</span>{% endif %}
-    {% if cabinet.error %}<span class="error">{{ cabinet.error }}</span>{% endif %}
-  </div>
-  {% endfor %}
-  <a class="button secondary" href="{{ orders_url(account, hide_printed) }}">Обновить экран</a>
-</section>
-{% if recent_shift %}
-<p role="status"{% if shift_loading %} data-shift-loading{% endif %}>Смена начата.{% if shift_loading %} Загружаем отправления.{% endif %}</p>
-{% endif %}
-<div class="orders-filter">
-  <form action="/orders" method="get">
-    <input type="hidden" name="account" value="{{ account }}">
-    <label><input id="hide-printed" type="checkbox" name="hide_printed" value="true"{% if hide_printed %} checked{% endif %}> Скрывать напечатанные</label>
-    <noscript><button class="button secondary" type="submit">Применить</button></noscript>
-  </form>
-  {% if has_printable %}{% include "label_print_option.html" %}{% endif %}
-</div>
-{% if has_printable %}
-    <form class="batch-label-form label-output" action="/label-batches" method="post" target="_blank" rel="noopener">
-      <input type="hidden" name="account" value="{{ account }}">
-      <input type="hidden" name="autoprint" value="true" disabled>
-      {% if hide_printed %}<input type="hidden" name="hide_printed" value="true">{% endif %}
-      <label class="label-option"><input type="checkbox" name="with_title" value="true"> Печатать названия книг на этикетках</label>
-      <button class="button" type="submit">Печатать все этикетки</button>
-    </form>
-{% endif %}
-{% for marketplace, columns in boards %}
-{% if boards|length > 1 %}<h2>{{ marketplace }}</h2>{% endif %}
-<div class="board">
-  {% for title, orders in columns %}
-  <section class="lane">
-    <h2>{{ title }} <span class="count">{{ orders|length }}</span></h2>
-    {% for order, printed, label_job_id in orders %}
+{% macro order_card(order, printed, label_job_id, waiting) %}
     {% set number = label_number(label_job_id, order.account_key) %}
     <article class="card" data-order-label>
       <div class="card-title">
@@ -72,10 +26,67 @@
         {% endfor %}
         {% if order.data.products|length > 3 %}<li>Ещё {{ order.data.products|length - 3 }}</li>{% endif %}
       </ul>
+      {% if waiting %}
+      <span class="tag offline">В ожидании</span>
+      {% elif order.status in label_statuses %}
+      {{ label_controls(order, printed, label_job_id, return_account=account, hide_printed=hide_printed, hide_waiting=hide_waiting) }}
+      {% endif %}
       {% if order.status in label_statuses %}
-      {{ label_controls(order, printed, label_job_id, return_account=account, hide_printed=hide_printed) }}
+      {{ waiting_control(order, waiting, return_account=account, hide_printed=hide_printed, hide_waiting=hide_waiting) }}
       {% endif %}
     </article>
+{% endmacro %}
+<div class="heading">
+  <h1>Активные отправления</h1>
+  <span class="connection {{ 'online' if online else 'offline' }}">Агент {{ 'в сети' if online else 'не в сети' }}</span>
+</div>
+<nav class="tabs" aria-label="Кабинеты">
+  {% for key, title, count in tabs %}
+  <a href="{{ orders_url(key, hide_printed, hide_waiting) }}"{% if key == account %} aria-current="page"{% endif %}>{{ title }} (<span data-print-count="{{ key }}">{{ count }}</span>)</a>
+  {% endfor %}
+</nav>
+<section class="sync" aria-label="Синхронизация">
+  {% for cabinet in cabinets %}
+  <div>
+    <strong>{{ cabinet_names[cabinet.key] }}</strong>
+    {% if cabinet.updated_at %}<span>Обновлён {{ cabinet.updated_at|msk }}</span>
+    {% else %}<span>Ожидаем первую загрузку</span>{% endif %}
+    {% if cabinet.error %}<span class="error">{{ cabinet.error }}</span>{% endif %}
+  </div>
+  {% endfor %}
+  <a class="button secondary" href="{{ orders_url(account, hide_printed, hide_waiting) }}">Обновить экран</a>
+</section>
+{% if recent_shift %}
+<p role="status"{% if shift_loading %} data-shift-loading{% endif %}>Смена начата.{% if shift_loading %} Загружаем отправления.{% endif %}</p>
+{% endif %}
+<div class="orders-filter">
+  <form action="/orders" method="get">
+    <input type="hidden" name="account" value="{{ account }}">
+    <label><input id="hide-printed" type="checkbox" name="hide_printed" value="true"{% if hide_printed %} checked{% endif %}> Скрывать напечатанные</label>
+    <input type="hidden" name="hide_waiting" value="false">
+    <label><input id="hide-waiting" type="checkbox" name="hide_waiting" value="true"{% if hide_waiting %} checked{% endif %}> Скрывать ожидающие</label>
+    <noscript><button class="button secondary" type="submit">Применить</button></noscript>
+  </form>
+  {% if has_printable %}{% include "label_print_option.html" %}{% endif %}
+</div>
+{% if has_printable %}
+    <form class="batch-label-form label-output" action="/label-batches" method="post" target="_blank" rel="noopener">
+      <input type="hidden" name="account" value="{{ account }}">
+      <input type="hidden" name="autoprint" value="true" disabled>
+      {% if hide_printed %}<input type="hidden" name="hide_printed" value="true">{% endif %}
+      {% if not hide_waiting %}<input type="hidden" name="show_waiting" value="true">{% endif %}
+      <label class="label-option"><input type="checkbox" name="with_title" value="true"> Печатать названия книг на этикетках</label>
+      <button class="button" type="submit">Печатать все этикетки</button>
+    </form>
+{% endif %}
+{% for marketplace, columns in boards %}
+{% if boards|length > 1 %}<h2>{{ marketplace }}</h2>{% endif %}
+<div class="board">
+  {% for title, orders in columns %}
+  <section class="lane">
+    <h2>{{ title }} <span class="count">{{ orders|length }}</span></h2>
+    {% for order, printed, label_job_id, waiting in orders %}
+    {{ order_card(order, printed, label_job_id, waiting) }}
     {% else %}
     <p class="empty">Здесь пока нет отправлений.</p>
     {% endfor %}
@@ -83,6 +94,14 @@
   {% endfor %}
 </div>
 {% endfor %}
+<section class="lane waiting-list" id="waiting">
+  <h2>В ожидании <span class="count">{{ waiting_orders|length }}</span></h2>
+  {% for order, printed, label_job_id, waiting in waiting_orders %}
+    {{ order_card(order, printed, label_job_id, waiting) }}
+  {% else %}
+  <p class="empty">Нет отправлений в ожидании.</p>
+  {% endfor %}
+</section>
 <footer class="orders-footer">
   <a href="/print-log">Журнал печати</a>
   <a class="button secondary" href="/shift/start">Начало смены</a>

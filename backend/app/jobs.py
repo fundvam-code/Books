@@ -4,7 +4,7 @@ from uuid import uuid4
 from sqlalchemy import delete, or_, select, text, update
 from sqlalchemy.dialects.postgresql import insert
 
-from .db import (Base, Cabinet, Job, LabelBatch, LabelPrint, Order, PrintLog, PrintTask, Shift, engine,
+from .db import (Base, Cabinet, Job, LabelBatch, LabelPrint, Order, OrderWaiting, PrintLog, PrintTask, Shift, engine,
                  write_transaction)
 
 OZON_ACCOUNTS = ("1", "2")
@@ -94,6 +94,7 @@ def start_shift(revision):
         db.execute(delete(LabelBatch))
         db.execute(delete(PrintLog))
         db.execute(delete(LabelPrint))
+        db.execute(delete(OrderWaiting))
         db.execute(delete(Order))
         db.execute(delete(Job).where(Job.state != "ready"))
         # Revoke cached PDFs now and let the scheduler remove their files.

@@ -4,7 +4,7 @@
 {% if pending %}<script src="/static/label.js" defer></script>{% endif %}
 {% endblock %}
 {% block content %}
-<a class="back" href="{{ orders_url(batch.account, hide_printed) }}">← К отправлениям</a>
+<a class="back" href="{{ orders_url(batch.account, hide_printed, not show_waiting) }}">← К отправлениям</a>
 <div class="heading"><h1>Печать всех этикеток</h1></div>
 <section class="panel" aria-live="polite">
   {% if merge_error %}
@@ -26,6 +26,7 @@
       {% if batch.labels|selectattr("title")|list %}<input type="hidden" name="with_title" value="true">{% endif %}
       {% if autoprint %}<input type="hidden" name="autoprint" value="true">{% endif %}
       {% if hide_printed %}<input type="hidden" name="hide_printed" value="true">{% endif %}
+      {% if show_waiting %}<input type="hidden" name="show_waiting" value="true">{% endif %}
       <button class="button" type="submit">Повторить запрос</button>
     </form>
     {% elif pending %}
