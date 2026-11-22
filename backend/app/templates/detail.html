@@ -34,6 +34,8 @@
   {{ label_controls(order, printed, label_job_id) }}
   {% endif %}
   {{ waiting_control(order, waiting) }}
+  {% elif order.status == 'wb_new' %}
+  <a class="button secondary" href="/orders/w/{{ order.posting_number }}/assembly">Перенести на сборку</a>
   {% endif %}
 </section>
 </div>

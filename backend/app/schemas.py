@@ -49,7 +49,8 @@ class SyncResult(BaseModel):
 class Completion(BaseModel):
     status: Literal["succeeded", "retryable_error", "permanent_error"]
     result: SyncResult | None = None
-    error: Literal["access", "rate", "unavailable", "response", "label", "profile"] | None = None
+    error: Literal["access", "rate", "unavailable", "response", "label", "profile",
+                   "assembly_conflict", "assembly_unknown"] | None = None
     retry_after: int | None = Field(default=None, ge=0, le=3600)
 
 
@@ -63,6 +64,7 @@ class PrintResult(BaseModel):
 
 class AgentAccounts(BaseModel):
     account_keys: list[Account] = Field(min_length=1, max_length=3)
+    wb_assembly: bool = False
 
 
 class AgentHeartbeat(AgentAccounts):

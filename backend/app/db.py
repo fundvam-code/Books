@@ -122,6 +122,14 @@ class Heartbeat(Base):
     seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
 
 
+class WbAssembly(Base):
+    __tablename__ = "wb_assembly"
+
+    job_id: Mapped[UUID] = mapped_column(ForeignKey("jobs.id", ondelete="CASCADE"), primary_key=True)
+    supply_id: Mapped[str] = mapped_column(String(80))
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
 engine = create_engine(
     os.environ.get("DATABASE_URL") or URL.create(
         "postgresql+psycopg", username="dashboard", password=os.environ.get("POSTGRES_PASSWORD"),

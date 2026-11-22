@@ -45,7 +45,7 @@ if __name__ == "__main__":
             key = f"{field}_{suffix}"
             os.environ[key] = profiles.get(key, "")
     wb = read_env(config_path.with_name(".env.wb"), raw=True, optional=True)
-    for key in ("WB_API_TOKEN", "WB_CONTENT_TOKEN"):
+    for key in ("WB_API_TOKEN", "WB_CONTENT_TOKEN", "WB_WRITE_TOKEN"):
         os.environ[key] = wb.get(key, "")
     logging.basicConfig(level=logging.INFO)
     logging.getLogger("httpx").setLevel(logging.WARNING)

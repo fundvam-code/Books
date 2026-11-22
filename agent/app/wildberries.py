@@ -20,18 +20,23 @@ log = logging.getLogger(__name__)
 
 
 class Wildberries:
-    def __init__(self, client, token, content_token=""):
+    def __init__(self, client, token, content_token="", write_token=""):
         self.client = client
         self.token = token
         self.content_token = content_token or token
+        self.write_token = write_token
         self.next_request = {}
         self.rate_limited_until = {}
         self.titles = {}
         self.content_retry_at = 0
         self.catalog_failure = None
 
-    async def request(self, method, path, *, content=False, label=False, **kwargs):
+    async def request(self, method, path, *, content=False, label=False, write=False, expected=200, **kwargs):
         origin, token, interval = (CONTENT, self.content_token, 0.75) if content else (MARKETPLACE, self.token, 0.2)
+        if write:
+            token = self.write_token
+            if not token:
+                raise MarketplaceError("profile")
         instant = monotonic()
         cooldown = ceil(self.rate_limited_until.get(origin, 0) - instant)
         if cooldown > 0:
@@ -55,8 +60,10 @@ class Wildberries:
             raise MarketplaceError("unavailable", True)
         if code in (401, 402, 403):
             raise MarketplaceError("access")
-        if code != 200:
+        if code != expected:
             raise MarketplaceError("label" if label else "response", label and code == 409)
+        if expected == 204:
+            return None
         try:
             data = reply.json()
         except ValueError as error:
@@ -137,6 +144,31 @@ class Wildberries:
                 return
             self.catalog_failure = None
             self.titles[nm] = (title, monotonic() + (3600 if title else 600))
+
+    async def check_assembly(self, number, supply_id):
+        try:
+            supply = await self.request("GET", f"/api/v3/supplies/{supply_id}", write=True)
+            if supply.get("id") != supply_id or supply.get("done") is not False:
+                raise MarketplaceError("assembly_conflict")
+            result = await self.request("POST", "/api/v3/orders/status", write=True, json={"orders": [int(number)]})
+        except MarketplaceError as error:
+            if error.code == "response" and not error.retry:
+                raise MarketplaceError("assembly_conflict") from error
+            raise
+        order = next((row for row in result["orders"] if row["id"] == int(number)), {})
+        if order.get("supplierStatus") != "new" or order.get("wbStatus") != "waiting":
+            raise MarketplaceError("assembly_conflict")
+
+    async def move_to_assembly(self, number, supply_id):
+        try:
+            await self.request("PATCH", f"/api/marketplace/v3/supplies/{supply_id}/orders", write=True,
+                               expected=204, timeout=15, json={"orders": [int(number)]})
+        except MarketplaceError as error:
+            if error.code == "unavailable":
+                raise MarketplaceError("assembly_unknown") from error
+            if error.code == "response":
+                raise MarketplaceError("assembly_conflict") from error
+            raise MarketplaceError(error.code) from error
 
     async def get_sticker(self, number):
         order_id = int(number)

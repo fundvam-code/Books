@@ -28,11 +28,11 @@ class Server:
         return response.json() if response.content else None
 
 
-async def heartbeat(server, profiles):
+async def heartbeat(server, capabilities):
     while True:
         try:
             await server.request("POST", "/heartbeat", json={
-                "agent_version": "0.1.0", "account_keys": list(profiles),
+                "agent_version": "0.1.0", **capabilities,
                 "observed_at": datetime.now(UTC).isoformat(),
             })
         except httpx.HTTPError:
@@ -60,6 +60,14 @@ async def process(server, job, profiles):
         if job["kind"] == "sync_orders":
             result = await marketplace.snapshot(account, payload["known_postings"])
             await server.request("POST", "complete", job=job, json={"status": "succeeded", "result": result})
+            return
+
+        if account == WB_ACCOUNT and job["kind"] == "wb_assembly":
+            number, supply = payload["posting_number"], payload["supply_id"]
+            await marketplace.check_assembly(number, supply)
+            await server.request("POST", "assembly-start", job=job)
+            await marketplace.move_to_assembly(number, supply)
+            await server.request("POST", "complete", job=job, json={"status": "succeeded"})
             return
 
         if account == WB_ACCOUNT:
@@ -113,19 +121,23 @@ async def run():
         profiles = {key: Ozon(marketplace, client_id, api_key) for key, (client_id, api_key) in keys.items()
                     if client_id and api_key}
         wb_token = os.environ.get("WB_API_TOKEN", "").strip()
+        wb_write_token = os.environ.get("WB_WRITE_TOKEN", "").strip()
         if wb_token:
-            profiles[WB_ACCOUNT] = Wildberries(marketplace, wb_token, os.environ.get("WB_CONTENT_TOKEN", "").strip())
+            profiles[WB_ACCOUNT] = Wildberries(
+                marketplace, wb_token, os.environ.get("WB_CONTENT_TOKEN", "").strip(), wb_write_token,
+            )
         if not profiles:
             raise SystemExit("Настройте ключ хотя бы одного кабинета Ozon или Wildberries")
         server = Server(api)
+        capabilities = {"account_keys": list(profiles), "wb_assembly": bool(wb_token and wb_write_token)}
         async with asyncio.TaskGroup() as group:
-            group.create_task(heartbeat(server, profiles))
+            group.create_task(heartbeat(server, capabilities))
             if printer:
                 group.create_task(print_worker(server, printer))
             delay = 2
             while True:
                 try:
-                    job = await server.request("POST", "/jobs/claim", json={"account_keys": list(profiles)})
+                    job = await server.request("POST", "/jobs/claim", json=capabilities)
                     delay = 2
                     if job is None:
                         await asyncio.sleep(delay)

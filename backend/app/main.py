@@ -19,12 +19,13 @@ from PIL import Image
 from pypdf import PdfWriter
 from pypdf.errors import PyPdfError
 from pypdfium2 import PdfiumError
-from sqlalchemy import and_, delete, desc, func, or_, select
+from sqlalchemy import and_, delete, desc, func, or_, select, update
 from sqlalchemy.dialects.postgresql import insert
 
-from .db import (Cabinet, Heartbeat, Job, LabelBatch, LabelPrint, Order, OrderWaiting, PrintLog, PrintTask, Session, Shift,
+from .db import (Cabinet, Heartbeat, Job, LabelBatch, LabelPrint, Order, OrderWaiting, PrintLog, PrintTask, Session, Shift, WbAssembly,
                  write_transaction)
-from .jobs import (ACTIVE, LABEL_STATUSES, OZON_ACCOUNTS, OZON_STATUSES, PDF_LIMIT, WB_ACCOUNT, WB_BOARD_STATUSES,
+from .jobs import (ACTIVE, LABEL_STATUSES, OZON_ACCOUNTS, OZON_STATUSES, PDF_LIMIT, WB_ACCOUNT, WB_ASSEMBLY_KIND,
+                   WB_BOARD_STATUSES, WB_WRITE_HEARTBEAT_ID,
                    ShiftConflict, apply_snapshot, claim, enqueue, fail_job, initialize, maintain, now, start_shift)
 from .label_title import NoTitleSpace, add_title
 from .printing import (PRINT_LEASE, TITLE_SPACE_ERROR, BatchTitleSpace, backfill_print_log,
@@ -145,18 +146,25 @@ def heartbeat(body: AgentHeartbeat, auth: Agent):
             created = db.scalar(insert(Cabinet).values(key=WB_ACCOUNT).on_conflict_do_nothing().returning(Cabinet.key))
             if created:
                 enqueue(db, "sync_orders", WB_ACCOUNT)
+            if body.wb_assembly:
+                db.execute(insert(Heartbeat).values(id=WB_WRITE_HEARTBEAT_ID, seen_at=stamp).on_conflict_do_update(
+                    index_elements=["id"], set_={"seen_at": stamp},
+                ))
     return Response(status_code=204)
 
 
 @app.post("/api/agent/jobs/claim")
 def claim_job(auth: Agent, body: AgentAccounts | None = None):
     with write_transaction() as db:
-        job = claim(db, body.account_keys if body else OZON_ACCOUNTS)
+        job = claim(db, body.account_keys if body else OZON_ACCOUNTS,
+                    wb_assembly=bool(body and body.wb_assembly))
         if job is None:
             return Response(status_code=204)
         payload = {}
         if job.kind == "label_pdf":
             payload = {"posting_number": job.posting_number, "ozon_task_id": job.ozon_task_id}
+        elif job.kind == WB_ASSEMBLY_KIND:
+            payload = {"posting_number": job.posting_number, "supply_id": db.get(WbAssembly, job.id).supply_id}
         else:
             payload = {"known_postings": [
                 {"posting_number": number, "created_at": data.get("created_at")}
@@ -176,19 +184,39 @@ def renew_job(job_id: UUID, auth: Agent, token: Lease):
     return Response(status_code=204)
 
 
+@app.post("/api/agent/jobs/{job_id}/assembly-start", status_code=204)
+def start_wb_assembly(job_id: UUID, auth: Agent, token: Lease):
+    with write_transaction() as db:
+        job = locked_job(db, job_id, token)
+        action = db.get(WbAssembly, job.id) if job.kind == WB_ASSEMBLY_KIND else None
+        if action is None or action.started_at is not None:
+            raise HTTPException(409, "Перевод уже начат или недоступен")
+        action.started_at = now()
+        job.lease_until = action.started_at + timedelta(seconds=90)
+    return Response(status_code=204)
+
+
 @app.post("/api/agent/jobs/{job_id}/complete", status_code=204)
 def complete_job(job_id: UUID, body: Completion, auth: Agent, token: Lease):
     with write_transaction() as db:
         job = locked_job(db, job_id, token)
         if body.status == "succeeded":
-            if job.kind != "sync_orders" or body.result is None:
+            if job.kind == WB_ASSEMBLY_KIND and db.get(WbAssembly, job.id).started_at is not None:
+                enqueue(db, "sync_orders", WB_ACCOUNT)
+                db.execute(update(Job).where(
+                    Job.kind == "sync_orders", Job.account_key == WB_ACCOUNT, Job.state == "pending",
+                    Job.available_at > now(),
+                ).values(available_at=now()))
+            elif job.kind == "sync_orders" and body.result is not None:
+                try:
+                    apply_snapshot(db, job.account_key, body.result)
+                except ValueError as error:
+                    raise HTTPException(422, str(error)) from error
+            else:
                 raise HTTPException(422, "Ожидался снимок заказов")
-            try:
-                apply_snapshot(db, job.account_key, body.result)
-            except ValueError as error:
-                raise HTTPException(422, str(error)) from error
             job.state = "done"
             job.lease_until = None
+            job.error = None
         else:
             fail_job(db, job, body)
     return Response(status_code=204)
@@ -409,6 +437,61 @@ def detail(request: Request, account_key: Account, posting_number: str):
 def require_dashboard_origin(request: Request):
     if request.headers.get("origin") != "https://" + os.environ["PUBLIC_DOMAIN"]:
         raise HTTPException(403, "Откройте форму печати в дашборде")
+
+
+def wb_write_online(db):
+    agent = db.get(Heartbeat, WB_WRITE_HEARTBEAT_ID)
+    return bool(agent and agent.seen_at >= now() - timedelta(seconds=120))
+
+
+@app.get("/orders/w/{posting_number}/assembly")
+def wb_assembly_form(request: Request, posting_number: str):
+    with Session() as db:
+        order = db.get(Order, (WB_ACCOUNT, posting_number))
+        if order is None or order.status != "wb_new":
+            raise HTTPException(404, "Новое задание Wildberries не найдено")
+        candidate = Order.data["supply_id"].as_string()
+        supplies = db.scalars(select(candidate).where(
+            Order.account_key == WB_ACCOUNT, Order.status == "wb_confirm", candidate.is_not(None),
+        ).distinct().order_by(candidate).limit(30)).all()
+        enabled = wb_write_online(db)
+    return templates.TemplateResponse(request, "wb_assembly.html", {
+        "order": order, "supplies": supplies, "enabled": enabled,
+    })
+
+
+@app.post("/orders/w/{posting_number}/assembly")
+def request_wb_assembly(request: Request, posting_number: str,
+                        supply_id: Annotated[str, Form(pattern=r"^[a-zA-Z0-9_-]{1,80}$")]):
+    if request.headers.get("origin") != "https://" + os.environ["PUBLIC_DOMAIN"]:
+        raise HTTPException(403, "Откройте форму перевода на сборку в дашборде")
+    with write_transaction() as db:
+        order = db.get(Order, (WB_ACCOUNT, posting_number), with_for_update=True)
+        if order is None or order.status != "wb_new":
+            raise HTTPException(409, "Задание больше не находится в «Новых»")
+        if not wb_write_online(db):
+            raise HTTPException(409, "Агент с настроенным WB_WRITE_TOKEN сейчас недоступен")
+        job_id = enqueue(db, WB_ASSEMBLY_KIND, WB_ACCOUNT, posting_number)
+        if job_id is not None:
+            db.add(WbAssembly(job_id=job_id, supply_id=supply_id))
+        else:
+            job_id = db.scalar(select(Job.id).where(
+                Job.kind == WB_ASSEMBLY_KIND, Job.account_key == WB_ACCOUNT,
+                Job.posting_number == posting_number, Job.state.in_(ACTIVE),
+            ))
+            if job_id is None or db.get(WbAssembly, job_id).supply_id != supply_id:
+                raise HTTPException(409, "Перевод этого задания уже запрошен")
+    return RedirectResponse(f"/wb-assembly/{job_id}", status_code=303)
+
+
+@app.get("/wb-assembly/{job_id}")
+def wb_assembly_status(request: Request, job_id: UUID):
+    with Session() as db:
+        job = db.get(Job, job_id)
+        action = db.get(WbAssembly, job_id) if job and job.kind == WB_ASSEMBLY_KIND else None
+        if action is None:
+            raise HTTPException(404, "Задание на перевод недоступно")
+    return templates.TemplateResponse(request, "wb_assembly_status.html", {"job": job, "action": action})
 
 
 def shift_confirmation(request: Request, *, error=None, status_code=200):

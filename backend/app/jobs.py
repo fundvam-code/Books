@@ -4,11 +4,13 @@ from uuid import uuid4
 from sqlalchemy import delete, or_, select, text, update
 from sqlalchemy.dialects.postgresql import insert
 
-from .db import (Base, Cabinet, Job, LabelBatch, LabelPrint, Order, OrderWaiting, PrintLog, PrintTask, Shift, engine,
+from .db import (Base, Cabinet, Job, LabelBatch, LabelPrint, Order, OrderWaiting, PrintLog, PrintTask, Shift, WbAssembly, engine,
                  write_transaction)
 
 OZON_ACCOUNTS = ("1", "2")
 WB_ACCOUNT = "w"
+WB_ASSEMBLY_KIND = "wb_assembly"
+WB_WRITE_HEARTBEAT_ID = 2
 ACTIVE = ("pending", "leased")
 OZON_STATUSES = ("awaiting_packaging", "awaiting_deliver")
 WB_BOARD_STATUSES = ("wb_new", "wb_confirm")
@@ -23,6 +25,8 @@ ERRORS = {
     "response": "Получен неожиданный ответ {marketplace}.",
     "label": "{marketplace} не смог подготовить этикетку.",
     "profile": "На ПК не настроен ключ этого кабинета.",
+    "assembly_conflict": "Проверьте, что поставка открыта, подходит для заказа и заказ ещё находится в «Новых».",
+    "assembly_unknown": "Wildberries не подтвердил результат. Проверьте заказ в кабинете перед повтором.",
 }
 CATALOG_ERRORS = {
     "denied": "Wildberries отклонил доступ к названиям. Проверьте токен категории «Контент» в .env.wb.",
@@ -56,6 +60,9 @@ def enqueue(db, kind, key, posting=""):
 def maintain(label_dir):
     with write_transaction() as db:
         instant = now()
+        db.execute(update(Job).where(
+            Job.kind == WB_ASSEMBLY_KIND, Job.state == "leased", Job.lease_until <= instant, assembly_started(),
+        ).values(state="failed", error=ERRORS["assembly_unknown"], lease_until=None))
         db.execute(update(PrintTask).where(PrintTask.state == "sending", PrintTask.lease_until <= instant)
                    .values(state="unknown", lease_until=None))
         printing = select(PrintTask.id).where(
@@ -90,6 +97,11 @@ def start_shift(revision):
         sending = select(PrintTask.id).where(PrintTask.state == "sending", PrintTask.lease_until > instant).exists()
         if db.scalar(select(sending)):
             raise ShiftConflict("Дождитесь завершения отправки на принтер и повторите.")
+        wb_writing = select(Job.id).where(
+            Job.kind == WB_ASSEMBLY_KIND, Job.state == "leased", Job.lease_until > instant, assembly_started(),
+        ).exists()
+        if db.scalar(select(wb_writing)):
+            raise ShiftConflict("Дождитесь ответа Wildberries о переводе на сборку и повторите.")
 
         db.execute(delete(LabelBatch))
         db.execute(delete(PrintLog))
@@ -109,7 +121,11 @@ def start_shift(revision):
         return current.revision
 
 
-def claim(db, account_keys):
+def assembly_started():
+    return select(WbAssembly.job_id).where(WbAssembly.job_id == Job.id, WbAssembly.started_at.is_not(None)).exists()
+
+
+def claim(db, account_keys, *, wb_assembly=False):
     instant = now()
     query = select(Job).where(
         Job.account_key.in_(account_keys),
@@ -118,6 +134,10 @@ def claim(db, account_keys):
             (Job.state == "leased") & (Job.lease_until <= instant),
         ),
     ).order_by((Job.kind == "label_pdf").desc(), Job.available_at, Job.id).limit(1)
+    if wb_assembly:
+        query = query.where(~assembly_started())
+    else:
+        query = query.where(Job.kind != WB_ASSEMBLY_KIND)
     job = db.scalar(query.with_for_update(skip_locked=True))
     if job is None:
         return None
@@ -188,9 +208,12 @@ def discard_reassigned_stickers(db, rows):
 def fail_job(db, job, completion):
     marketplace = "Wildberries" if job.account_key == WB_ACCOUNT else "Ozon"
     job.error = ERRORS.get(completion.error, ERRORS["response"]).format(marketplace=marketplace)
+    if job.kind == WB_ASSEMBLY_KIND and completion.error == "access":
+        job.error = "Wildberries отклонил токен записи. Для WB_WRITE_TOKEN нужны «Маркетплейс» и «Чтение и запись»."
     if job.kind == "sync_orders":
         db.get(Cabinet, job.account_key).error = job.error
-    if completion.status == "retryable_error" and (job.kind == "sync_orders" or job.attempts < 5):
+    started = job.kind == WB_ASSEMBLY_KIND and db.get(WbAssembly, job.id).started_at is not None
+    if not started and completion.status == "retryable_error" and (job.kind == "sync_orders" or job.attempts < 5):
         delay = max(completion.retry_after or 0, min(300, 5 * 2 ** min(job.attempts, 6)))
         job.available_at = now() + timedelta(seconds=delay)
         job.state = "pending"

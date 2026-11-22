@@ -33,6 +33,8 @@
       {% endif %}
       {% if order.status in label_statuses %}
       {{ waiting_control(order, waiting, return_account=account, hide_printed=hide_printed, hide_waiting=hide_waiting) }}
+      {% elif order.status == 'wb_new' %}
+      <a class="button secondary" href="/orders/w/{{ order.posting_number }}/assembly">Перенести на сборку</a>
       {% endif %}
     </article>
 {% endmacro %}
