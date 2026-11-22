@@ -27,14 +27,17 @@
     <div><dt>Способ доставки</dt><dd>{{ data.delivery_method or '—' }}</dd></div>
   </dl>
   {% if waiting %}
-  <span class="tag offline">В ожидании</span>
+  <div class="assembly-actions">
+    <span class="tag offline">В ожидании</span>
+    {{ waiting_control(order, waiting) }}
+  </div>
   {% elif order.status in label_statuses %}
   {% include "label_print_option.html" %}
   {{ label_controls(order, printed, label_job_id) }}
   {% elif order.status == 'wb_new' %}
   {% include "wb_assembly_actions.html" %}
   {% endif %}
-  {% if waiting or order.status != 'wb_new' %}{{ waiting_control(order, waiting) }}{% endif %}
+  {% if not waiting and order.status != 'wb_new' %}{{ waiting_control(order, waiting) }}{% endif %}
 </section>
 </div>
 <section class="panel">

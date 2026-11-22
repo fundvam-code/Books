@@ -27,11 +27,10 @@
         {% endfor %}
         {% if order.data.products|length > 3 %}<li>Ещё {{ order.data.products|length - 3 }}</li>{% endif %}
       </ul>
-      {% if waiting %}
-      <span class="tag offline">В ожидании · {{ order_status_labels[order.status] }}</span>
-      {% endif %}
+      {% set waiting_badge %}{% if waiting %}<span class="tag offline">В ожидании · {{ order_status_labels[order.status] }}</span>{% endif %}{% endset %}
       {% if order.status == 'awaiting_packaging' and order.account_key in ('1', '2') %}
       <div class="assembly-actions">
+        {{ waiting_badge }}
         {% if order.account_key in ozon_assembly_accounts %}
         <form action="/orders/{{ order.account_key }}/{{ order.posting_number }}/assembly?{{ orders_query(account, hide_printed, hide_waiting) }}" method="post">
           <button class="button secondary" type="submit">Собрать</button>
@@ -47,8 +46,13 @@
       </div>
       {% elif order.status == 'wb_new' %}
       {% include "wb_assembly_actions.html" %}
+      {% elif waiting %}
+      <div class="assembly-actions">
+        {{ waiting_badge }}
+        {{ waiting_control(order, waiting, return_account=account, hide_printed=hide_printed, hide_waiting=hide_waiting) }}
+      </div>
       {% else %}
-      {% if order.status in label_statuses and not waiting %}
+      {% if order.status in label_statuses %}
       {{ label_controls(order, printed, label_job_id, return_account=account, hide_printed=hide_printed, hide_waiting=hide_waiting) }}
       {% endif %}
       {{ waiting_control(order, waiting, return_account=account, hide_printed=hide_printed, hide_waiting=hide_waiting) }}

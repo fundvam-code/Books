@@ -1,4 +1,5 @@
 <div class="assembly-actions">
+  {{ waiting_badge|default('') }}
   {% set return_query = orders_query(account|default(order.account_key), hide_printed|default(false), hide_waiting|default(true)) %}
   <a class="button secondary" href="/orders/w/{{ order.posting_number }}/assembly?{{ return_query }}">Собрать</a>
   <form action="/orders/w/{{ order.posting_number }}/assembly?{{ return_query }}" method="post">
