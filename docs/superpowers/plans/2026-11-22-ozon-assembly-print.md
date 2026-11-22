@@ -29,43 +29,43 @@
 
 **Files:** `agent/app/ozon.py`, `agent/app/main.py`
 
-- [ ] Add Ozon `ship` using SKU as `product_id`, and a bounded status check for `awaiting_deliver`.
-- [ ] Process `ozon_assembly` jobs; for print mode, continue through existing label create/download/upload flow.
-- [ ] Advertise Ozon write-capable cabinet keys in heartbeat and pass them when claiming jobs.
+- [x] Add Ozon `ship` using SKU as `product_id`, and a bounded status check for `awaiting_deliver`.
+- [x] Process `ozon_assembly` jobs; for print mode, continue through existing label create/download/upload flow.
+- [x] Advertise configured Ozon cabinets in heartbeat and pass them when claiming jobs.
 
 ### Task 2: Server queue and print handoff
 
 **Files:** `backend/app/db.py`, `backend/app/jobs.py`, `backend/app/schemas.py`, `backend/app/main.py`, `backend/app/printing.py`
 
-- [ ] Store Ozon assembly intent and its optional label job.
-- [ ] Claim only for an agent advertising the matching Ozon cabinet; expose assembly jobs and handle verified completion.
-- [ ] On print mode, enqueue the standard label job after verified assembly and queue its PDF for the local printer when uploaded.
-- [ ] Allow the successful print task to mark its linked Ozon order printed, including while cached sync is pending.
+- [x] Store Ozon assembly intent and its optional label job.
+- [x] Claim only for an agent advertising the matching Ozon cabinet; expose assembly jobs and handle verified completion.
+- [x] On print mode, enqueue the standard label job after verified assembly and queue its PDF for the local printer when uploaded.
+- [x] Allow the successful print task to mark its linked Ozon order printed, including while cached sync is pending.
 
 ### Task 3: Dashboard actions and progress
 
 **Files:** `backend/app/main.py`, `backend/app/templates/orders.html`, new `backend/app/templates/ozon_assembly_status.html`, `backend/app/static/dashboard.css`
 
-- [ ] Add the exact two requested buttons to Ozon orders in `awaiting_packaging`.
-- [ ] Add CSRF/Origin-protected form handling and an idempotent progress page for assembly, label, and print state.
-- [ ] Show errors without marking printed; refresh the board when the workflow completes.
+- [x] Add the exact two requested buttons to Ozon orders in `awaiting_packaging`.
+- [x] Add CSRF/Origin-protected form handling and an idempotent progress page for assembly, label, and print state.
+- [x] Show errors without marking printed; refresh the board when the workflow completes.
 
 ### Task 4: Remove shipment date from cards
 
 **Files:** `backend/app/templates/orders.html`
 
-- [ ] Remove the shipment-date paragraph from order cards without changing detail-page dates.
+- [x] Remove the shipment-date paragraph from order cards without changing detail-page dates.
 
 ### Task 5: Add book covers to cards
 
-**Files:** `agent/app/ozon.py`, `agent/app/wildberries.py`, `backend/app/schemas.py`, `backend/app/main.py`, `backend/app/jobs.py`, `backend/app/templates/orders.html`, `backend/app/templates/product_storage.html`, `backend/app/static/dashboard.css`
+**Files:** `agent/app/ozon.py`, `agent/app/wildberries.py`, `backend/app/schemas.py`, `backend/app/main.py`, `backend/app/jobs.py`, `backend/app/templates/orders.html`, `backend/app/templates/product_cover.html`, `backend/app/static/dashboard.css`
 
-- [ ] Enrich Ozon posting products from Product Info by SKU with the primary image URL and listing creation time; treat permission or lookup failures as optional metadata so order sync still succeeds.
-- [ ] Include WB card photo and `createdAt` alongside title in the existing Content API cache.
-- [ ] Render a small cover for products with an image URL and enlarge it on hover without obscuring other card actions.
+- [x] Enrich Ozon posting products from Product Info by seller offer ID with the primary image URL and listing creation time; treat permission or lookup failures as optional metadata so order sync still succeeds.
+- [x] Include WB card photo and `createdAt` alongside title in the existing Content API cache.
+- [x] Render a small cover for products with an image URL and enlarge it on hover without obscuring other card actions.
 
 ### Task 6: Show listing creation date in order details
 
 **Files:** `backend/app/main.py`, `backend/app/templates/detail.html`
 
-- [ ] Add a date-only MSK display for each product's listing creation time in the detailed order view.
+- [x] Add a date-only MSK display for each product's listing creation time in the detailed order view.
