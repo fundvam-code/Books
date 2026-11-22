@@ -88,14 +88,9 @@ class Ozon:
                     raise OzonError("response", True)
                 for item in items:
                     if isinstance(item, dict) and isinstance(item.get("offer_id"), str):
-                        images = item.get("images") if isinstance(item.get("images"), list) else []
-                        primary = item.get("primary_image")
-                        image = primary if isinstance(primary, str) and primary.startswith("https://") else next(
-                            (url for url in images if isinstance(url, str) and url.startswith("https://")), None,
-                        )
-                        full = next((url for url in images if isinstance(url, str) and url.startswith("https://")), image)
+                        image = first_image_url(item.get("primary_image")) or first_image_url(item.get("images"))
                         metadata[item["offer_id"]] = {
-                            "image_url": image, "image_full_url": full,
+                            "image_url": image, "image_full_url": image,
                             "listing_created_at": item.get("created_at") if isinstance(item.get("created_at"), str) else None,
                         }
         except (OzonError, KeyError, TypeError, ValueError) as error:
@@ -184,6 +179,11 @@ class Ozon:
         if not data.startswith(b"%PDF-") or b"%%EOF" not in data[-2048:]:
             raise OzonError("label")
         return bytes(data)
+
+
+def first_image_url(value):
+    urls = value if isinstance(value, list) else [value]
+    return next((url for url in urls if isinstance(url, str) and url.startswith("https://")), None)
 
 
 def value_text(value):
