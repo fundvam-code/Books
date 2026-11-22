@@ -26,17 +26,15 @@
     <div><dt>Склад</dt><dd>{{ data.warehouse or '—' }}</dd></div>
     <div><dt>Способ доставки</dt><dd>{{ data.delivery_method or '—' }}</dd></div>
   </dl>
-  {% if order.status in label_statuses %}
   {% if waiting %}
   <span class="tag offline">В ожидании</span>
-  {% else %}
+  {% elif order.status in label_statuses %}
   {% include "label_print_option.html" %}
   {{ label_controls(order, printed, label_job_id) }}
-  {% endif %}
-  {{ waiting_control(order, waiting) }}
   {% elif order.status == 'wb_new' %}
   <a class="button secondary" href="/orders/w/{{ order.posting_number }}/assembly">Перенести на сборку</a>
   {% endif %}
+  {{ waiting_control(order, waiting) }}
 </section>
 </div>
 <section class="panel">

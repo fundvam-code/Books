@@ -468,7 +468,6 @@ def orders(request: Request, account: str = "all", hide_printed: bool = False, s
     has_printable = False
     for order, printed, job_id, waiting in records:
         printable = order.status in LABEL_STATUSES
-        waiting = waiting and printable
         card = (order, printed, job_id if pdf_is_available(job_id) else None, waiting)
         if waiting:
             waiting_orders.append(card)
@@ -494,6 +493,7 @@ def orders(request: Request, account: str = "all", hide_printed: bool = False, s
         "storage_updated_at": catalog.updated_at if catalog else None,
         "storage_refresh": storage_refresh,
         "waiting_orders": waiting_orders,
+        "order_status_labels": labels,
         "recent_shift": recent_shift,
         "shift_loading": recent_shift and any(cabinet.updated_at is None and not cabinet.error for cabinet in cabinets),
         "has_printable": has_printable,
@@ -524,7 +524,7 @@ def detail(request: Request, account_key: Account, posting_number: str):
     return templates.TemplateResponse(request, "detail.html", {
         "order": order, "data": order.data, "status_label": labels[order.status],
         "printed": printed, "label_job_id": job_id if pdf_is_available(job_id) else None,
-        "waiting": waiting and order.status in LABEL_STATUSES,
+        "waiting": waiting,
         "storage_match": StorageLookup(catalog.entries if catalog else []).match,
     })
 
@@ -570,6 +570,8 @@ def request_ozon_assembly(request: Request, account_key: Account, posting_number
         order = db.get(Order, (account_key, posting_number), with_for_update=True)
         if order is None or order.status != "awaiting_packaging":
             raise HTTPException(409, "Заказ больше не ожидает сборки")
+        if db.get(OrderWaiting, (account_key, posting_number)):
+            raise HTTPException(409, "Сначала верните отправление из ожидания")
         if not ozon_capability_online(db, account_key):
             raise HTTPException(409, "Локальный агент Ozon с правом сборки сейчас не в сети")
         if print_after and not ozon_capability_online(db, account_key, printing=True):
@@ -631,6 +633,8 @@ def request_wb_assembly(request: Request, posting_number: str):
         order = db.get(Order, (WB_ACCOUNT, posting_number), with_for_update=True)
         if order is None or order.status != "wb_new":
             raise HTTPException(409, "Задание больше не находится в «Новых»")
+        if db.get(OrderWaiting, (WB_ACCOUNT, posting_number)):
+            raise HTTPException(409, "Сначала верните отправление из ожидания")
         if not wb_write_online(db):
             raise HTTPException(409, "Агент с настроенным WB_WRITE_TOKEN сейчас недоступен")
         job_id = enqueue(db, WB_ASSEMBLY_KIND, WB_ACCOUNT, posting_number)
@@ -829,9 +833,14 @@ def change_order_waiting(request: Request, account_key: Account, posting_number:
     require_dashboard_origin(request)
     with write_transaction() as db:
         order = db.get(Order, (account_key, posting_number), with_for_update=True)
-        if order is None or order.status not in LABEL_STATUSES:
-            raise HTTPException(409, "Отправление больше не ожидает отгрузки")
+        if order is None or order.status not in labels:
+            raise HTTPException(409, "Отправление больше не активно")
         if state == "hold":
+            if db.scalar(select(Job.id).where(
+                Job.account_key == account_key, Job.posting_number == posting_number,
+                Job.kind.in_((OZON_ASSEMBLY_KIND, WB_ASSEMBLY_KIND)), Job.state.in_(ACTIVE),
+            ).limit(1)) is not None:
+                raise HTTPException(409, "Дождитесь завершения сборки и повторите перенос")
             job_ids = {str(job_id) for job_id in db.scalars(select(Job.id).where(
                 Job.account_key == account_key, Job.posting_number == posting_number, Job.kind == "label_pdf",
             ))}

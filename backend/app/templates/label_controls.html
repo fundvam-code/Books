@@ -35,6 +35,6 @@
   {% if return_account %}<input type="hidden" name="return_account" value="{{ return_account }}">{% endif %}
   {% if hide_printed %}<input type="hidden" name="hide_printed" value="true">{% endif %}
   {% if not hide_waiting %}<input type="hidden" name="hide_waiting" value="false">{% endif %}
-  <button class="button secondary" type="submit">{{ 'Вернуть к отгрузке' if waiting else 'Перенести в ожидание' }}</button>
+  <button class="button secondary" type="submit">{{ 'Вернуть из ожидания' if waiting else 'Перенести в ожидание' }}</button>
 </form>
 {% endmacro %}
