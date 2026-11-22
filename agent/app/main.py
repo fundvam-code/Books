@@ -11,6 +11,8 @@ from .ozon import Ozon
 from .printing import LP, print_worker
 from .wildberries import ACCOUNT as WB_ACCOUNT, Wildberries
 
+OZON_ASSEMBLY_KIND = "ozon_assembly"
+
 log = logging.getLogger("agent")
 
 
@@ -60,6 +62,14 @@ async def process(server, job, profiles):
         if job["kind"] == "sync_orders":
             result = await marketplace.snapshot(account, payload["known_postings"])
             await server.request("POST", "complete", job=job, json={"status": "succeeded", "result": result})
+            return
+
+        if job["kind"] == OZON_ASSEMBLY_KIND:
+            await server.request("POST", "assembly-start", job=job)
+            status = await marketplace.assemble(payload["posting_number"], payload["products"])
+            await server.request("POST", "complete", job=job, json={
+                "status": "succeeded", "assembly_status": status,
+            })
             return
 
         if account == WB_ACCOUNT and job["kind"] == "wb_assembly":
@@ -131,7 +141,12 @@ async def run():
             raise SystemExit("Настройте ключ хотя бы одного кабинета Ozon или Wildberries")
         server = Server(api)
         wb_assembly = bool(wb_token and wb_write_token)
-        capabilities = {"account_keys": list(profiles), "wb_assembly": wb_assembly, "wb_auto_assembly": wb_assembly}
+        ozon_accounts = [key for key in profiles if key in ("1", "2")]
+        capabilities = {
+            "account_keys": list(profiles), "wb_assembly": wb_assembly, "wb_auto_assembly": wb_assembly,
+            "ozon_assembly_accounts": ozon_accounts,
+            "ozon_print_accounts": ozon_accounts if printer else [],
+        }
         async with asyncio.TaskGroup() as group:
             group.create_task(heartbeat(server, capabilities))
             if printer:

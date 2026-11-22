@@ -1,3 +1,4 @@
+import asyncio
 from datetime import UTC, datetime, timedelta
 
 import httpx
@@ -86,6 +87,41 @@ class Ozon:
         if preferred is None:
             raise OzonError("label", True)
         return int(preferred["task_id"])
+
+    async def assemble(self, number, products):
+        posting = await self.post("/v3/posting/fbs/get", {"posting_number": number})
+        status = posting.get("status")
+        if status == "awaiting_deliver":
+            return status
+        if status != "awaiting_packaging":
+            raise OzonError("ozon_assembly_conflict")
+        package_products = []
+        for product in products:
+            try:
+                sku = int(product["sku"])
+                quantity = int(product["quantity"])
+            except (KeyError, TypeError, ValueError) as error:
+                raise OzonError("response") from error
+            if sku <= 0 or quantity <= 0:
+                raise OzonError("response")
+            package_products.append({"product_id": sku, "quantity": quantity})
+        if not package_products:
+            raise OzonError("response")
+        await self.post("/v4/posting/fbs/ship", {
+            "posting_number": number,
+            "packages": [{"products": package_products}],
+            "with": {"additional_data": True},
+        })
+        for attempt in range(12):
+            if attempt:
+                await asyncio.sleep(5)
+            posting = await self.post("/v3/posting/fbs/get", {"posting_number": number})
+            status = posting.get("status")
+            if status == "awaiting_deliver":
+                return status
+            if status not in ("awaiting_packaging", "acceptance_in_progress"):
+                raise OzonError("ozon_assembly_conflict")
+        raise OzonError("ozon_assembly_unknown")
 
     async def get_label_url(self, task_id):
         reply = await self.post("/v2/posting/fbs/package-label/get", {"task_id": task_id}, label=True)

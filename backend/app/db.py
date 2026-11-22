@@ -138,6 +138,16 @@ class WbAssembly(Base):
     started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
 
+class OzonAssembly(Base):
+    __tablename__ = "ozon_assembly"
+
+    job_id: Mapped[UUID] = mapped_column(ForeignKey("jobs.id", ondelete="CASCADE"), primary_key=True)
+    print_after: Mapped[bool] = mapped_column(default=False)
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    label_job_id: Mapped[UUID | None] = mapped_column(ForeignKey("jobs.id", ondelete="SET NULL"), unique=True)
+    print_task_id: Mapped[UUID | None] = mapped_column(ForeignKey("print_tasks.id", ondelete="SET NULL"))
+
+
 engine = create_engine(
     os.environ.get("DATABASE_URL") or URL.create(
         "postgresql+psycopg", username="dashboard", password=os.environ.get("POSTGRES_PASSWORD"),

@@ -4,13 +4,16 @@ from uuid import uuid4
 from sqlalchemy import delete, inspect, or_, select, text, update
 from sqlalchemy.dialects.postgresql import insert
 
-from .db import (Base, Cabinet, Job, LabelBatch, LabelPrint, Order, OrderWaiting, PrintLog, PrintTask, Shift, WbAssembly, engine,
+from .db import (Base, Cabinet, Job, LabelBatch, LabelPrint, Order, OrderWaiting, OzonAssembly, PrintLog, PrintTask, Shift, WbAssembly, engine,
                  write_transaction)
 
 OZON_ACCOUNTS = ("1", "2")
 WB_ACCOUNT = "w"
 WB_ASSEMBLY_KIND = "wb_assembly"
+OZON_ASSEMBLY_KIND = "ozon_assembly"
 WB_AUTO_ASSEMBLY_HEARTBEAT_ID = 3
+OZON_ASSEMBLY_HEARTBEAT_BASE = 10
+OZON_PRINT_HEARTBEAT_BASE = 20
 ACTIVE = ("pending", "leased")
 OZON_STATUSES = ("awaiting_packaging", "awaiting_deliver")
 WB_BOARD_STATUSES = ("wb_new", "wb_confirm")
@@ -29,6 +32,8 @@ ERRORS = {
     "assembly_unknown": "Wildberries не подтвердил результат. Проверьте заказ в кабинете перед повтором.",
     "assembly_no_supply": "Открытая поставка не найдена. Создайте поставку в WB Partners и повторите перенос.",
     "assembly_multiple_supplies": "Найдено несколько открытых поставок. Выберите нужную в кабинете WB Partners.",
+    "ozon_assembly_conflict": "Ozon не подтвердил сборку. Проверьте статус отправления в кабинете.",
+    "ozon_assembly_unknown": "Не удалось проверить результат сборки Ozon. Проверьте отправление в кабинете перед повтором.",
 }
 CATALOG_ERRORS = {
     "denied": "Wildberries отклонил доступ к названиям. Проверьте токен категории «Контент» в .env.wb.",
@@ -68,6 +73,12 @@ def maintain(label_dir):
         db.execute(update(Job).where(
             Job.kind == WB_ASSEMBLY_KIND, Job.state == "leased", Job.lease_until <= instant, assembly_started(),
         ).values(state="failed", error=ERRORS["assembly_unknown"], lease_until=None))
+        ozon_started = select(OzonAssembly.job_id).where(
+            OzonAssembly.job_id == Job.id, OzonAssembly.started_at.is_not(None),
+        ).exists()
+        db.execute(update(Job).where(
+            Job.kind == OZON_ASSEMBLY_KIND, Job.state == "leased", Job.lease_until <= instant, ozon_started,
+        ).values(state="failed", error=ERRORS["ozon_assembly_unknown"], lease_until=None))
         db.execute(update(PrintTask).where(PrintTask.state == "sending", PrintTask.lease_until <= instant)
                    .values(state="unknown", lease_until=None))
         printing = select(PrintTask.id).where(
@@ -107,6 +118,14 @@ def start_shift(revision):
         ).exists()
         if db.scalar(select(wb_writing)):
             raise ShiftConflict("Дождитесь ответа Wildberries о переводе на сборку и повторите.")
+        ozon_writing = select(Job.id).where(
+            Job.kind == OZON_ASSEMBLY_KIND, Job.state == "leased", Job.lease_until > instant,
+            select(OzonAssembly.job_id).where(
+                OzonAssembly.job_id == Job.id, OzonAssembly.started_at.is_not(None),
+            ).exists(),
+        ).exists()
+        if db.scalar(select(ozon_writing)):
+            raise ShiftConflict("Дождитесь ответа Ozon о сборке и повторите.")
 
         db.execute(delete(LabelBatch))
         db.execute(delete(PrintLog))
@@ -130,7 +149,7 @@ def assembly_started():
     return select(WbAssembly.job_id).where(WbAssembly.job_id == Job.id, WbAssembly.started_at.is_not(None)).exists()
 
 
-def claim(db, account_keys, *, wb_assembly=False, wb_auto_assembly=False):
+def claim(db, account_keys, *, wb_assembly=False, wb_auto_assembly=False, ozon_assembly_accounts=()):
     instant = now()
     query = select(Job).where(
         Job.account_key.in_(account_keys),
@@ -148,6 +167,10 @@ def claim(db, account_keys, *, wb_assembly=False, wb_auto_assembly=False):
             WbAssembly.job_id == Job.id, WbAssembly.supply_id.is_not(None),
         ).exists()
         query = query.where(or_(Job.kind != WB_ASSEMBLY_KIND, selected_supply))
+    if ozon_assembly_accounts:
+        query = query.where(or_(Job.kind != OZON_ASSEMBLY_KIND, Job.account_key.in_(ozon_assembly_accounts)))
+    else:
+        query = query.where(Job.kind != OZON_ASSEMBLY_KIND)
     job = db.scalar(query.with_for_update(skip_locked=True))
     if job is None:
         return None
@@ -220,9 +243,12 @@ def fail_job(db, job, completion):
     job.error = ERRORS.get(completion.error, ERRORS["response"]).format(marketplace=marketplace)
     if job.kind == WB_ASSEMBLY_KIND and completion.error == "access":
         job.error = "Wildberries отклонил токен записи. Для WB_WRITE_TOKEN нужны «Маркетплейс» и «Чтение и запись»."
+    elif job.kind == OZON_ASSEMBLY_KIND and completion.error == "access":
+        job.error = "Ozon отклонил права ключа. Для сборки требуется Posting FBS с доступом на чтение и запись."
     if job.kind == "sync_orders":
         db.get(Cabinet, job.account_key).error = job.error
-    started = job.kind == WB_ASSEMBLY_KIND and db.get(WbAssembly, job.id).started_at is not None
+    started = (job.kind == WB_ASSEMBLY_KIND and db.get(WbAssembly, job.id).started_at is not None
+               or job.kind == OZON_ASSEMBLY_KIND and db.get(OzonAssembly, job.id).started_at is not None)
     if not started and completion.status == "retryable_error" and (job.kind == "sync_orders" or job.attempts < 5):
         delay = max(completion.retry_after or 0, min(300, 5 * 2 ** min(job.attempts, 6)))
         job.available_at = now() + timedelta(seconds=delay)

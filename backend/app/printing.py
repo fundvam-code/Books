@@ -11,7 +11,7 @@ from pypdf.errors import PyPdfError
 from sqlalchemy import and_, or_, select
 from sqlalchemy.dialects.postgresql import insert
 
-from .db import Cabinet, Job, LabelBatch, LabelPrint, Order, PrintLog, PrintTask, write_transaction
+from .db import Cabinet, Job, LabelBatch, LabelPrint, Order, OzonAssembly, PrintLog, PrintTask, write_transaction
 from .jobs import ACTIVE, LABEL_STATUSES, REASSIGNED_LABEL_ERROR, WB_ACCOUNT, now
 from .label_title import NoTitleSpace, add_title
 
@@ -117,7 +117,10 @@ def mark_submitted_labels(db, task_id):
     printed = select(Order.account_key, Order.posting_number).join(
         PrintLog, and_(PrintLog.account_key == Order.account_key, PrintLog.posting_number == Order.posting_number),
     ).join(Job, Job.id == PrintLog.label_job_id).where(
-        PrintLog.task_id == task_id, Order.status.in_(LABEL_STATUSES),
+        PrintLog.task_id == task_id,
+        or_(Order.status.in_(LABEL_STATUSES), select(OzonAssembly.job_id).where(
+            OzonAssembly.label_job_id == PrintLog.label_job_id, OzonAssembly.print_after.is_(True),
+        ).exists()),
         Job.error.is_distinct_from(REASSIGNED_LABEL_ERROR),
     ).distinct()
     db.execute(insert(LabelPrint).from_select(["account_key", "posting_number"], printed).on_conflict_do_nothing())

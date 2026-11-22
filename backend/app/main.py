@@ -25,9 +25,10 @@ from sqlalchemy import and_, delete, desc, func, or_, select, update
 from sqlalchemy.dialects.postgresql import insert
 
 from .book_storage import StorageLookup, refresh_catalog
-from .db import (BookStorage, Cabinet, Heartbeat, Job, LabelBatch, LabelPrint, Order, OrderWaiting, PrintLog, PrintTask, Session, Shift, WbAssembly,
+from .db import (BookStorage, Cabinet, Heartbeat, Job, LabelBatch, LabelPrint, Order, OrderWaiting, OzonAssembly, PrintLog, PrintTask, Session, Shift, WbAssembly,
                  write_transaction)
 from .jobs import (ACTIVE, LABEL_STATUSES, OZON_ACCOUNTS, OZON_STATUSES, PDF_LIMIT, WB_ACCOUNT, WB_ASSEMBLY_KIND,
+                   OZON_ASSEMBLY_KIND, OZON_ASSEMBLY_HEARTBEAT_BASE, OZON_PRINT_HEARTBEAT_BASE,
                    WB_AUTO_ASSEMBLY_HEARTBEAT_ID, WB_BOARD_STATUSES,
                    ShiftConflict, apply_snapshot, claim, enqueue, fail_job, initialize, maintain, now, start_shift)
 from .label_title import NoTitleSpace, add_title
@@ -153,6 +154,16 @@ def heartbeat(body: AgentHeartbeat, auth: Agent):
                 db.execute(insert(Heartbeat).values(id=WB_AUTO_ASSEMBLY_HEARTBEAT_ID, seen_at=stamp).on_conflict_do_update(
                     index_elements=["id"], set_={"seen_at": stamp},
                 ))
+        for key in body.ozon_assembly_accounts:
+            heartbeat_id = OZON_ASSEMBLY_HEARTBEAT_BASE + int(key)
+            db.execute(insert(Heartbeat).values(id=heartbeat_id, seen_at=stamp).on_conflict_do_update(
+                index_elements=["id"], set_={"seen_at": stamp},
+            ))
+        for key in body.ozon_print_accounts:
+            heartbeat_id = OZON_PRINT_HEARTBEAT_BASE + int(key)
+            db.execute(insert(Heartbeat).values(id=heartbeat_id, seen_at=stamp).on_conflict_do_update(
+                index_elements=["id"], set_={"seen_at": stamp},
+            ))
     return Response(status_code=204)
 
 
@@ -160,7 +171,8 @@ def heartbeat(body: AgentHeartbeat, auth: Agent):
 def claim_job(auth: Agent, body: AgentAccounts | None = None):
     with write_transaction() as db:
         job = claim(db, body.account_keys if body else OZON_ACCOUNTS,
-                    wb_assembly=bool(body and body.wb_assembly), wb_auto_assembly=bool(body and body.wb_auto_assembly))
+                    wb_assembly=bool(body and body.wb_assembly), wb_auto_assembly=bool(body and body.wb_auto_assembly),
+                    ozon_assembly_accounts=body.ozon_assembly_accounts if body else ())
         if job is None:
             return Response(status_code=204)
         payload = {}
@@ -168,6 +180,15 @@ def claim_job(auth: Agent, body: AgentAccounts | None = None):
             payload = {"posting_number": job.posting_number, "ozon_task_id": job.ozon_task_id}
         elif job.kind == WB_ASSEMBLY_KIND:
             payload = {"posting_number": job.posting_number, "supply_id": db.get(WbAssembly, job.id).supply_id}
+        elif job.kind == OZON_ASSEMBLY_KIND:
+            action = db.get(OzonAssembly, job.id)
+            order = db.get(Order, (job.account_key, job.posting_number))
+            payload = {
+                "posting_number": job.posting_number,
+                "print_after": action.print_after,
+                "products": [{"sku": product.get("sku"), "quantity": product.get("quantity")}
+                             for product in (order.data.get("products", []) if order else [])],
+            }
         else:
             payload = {"known_postings": [
                 {"posting_number": number, "created_at": data.get("created_at")}
@@ -191,6 +212,14 @@ def renew_job(job_id: UUID, auth: Agent, token: Lease):
 def start_wb_assembly(job_id: UUID, auth: Agent, token: Lease, body: AssemblyStart | None = None):
     with write_transaction() as db:
         job = locked_job(db, job_id, token)
+        if job.kind == OZON_ASSEMBLY_KIND:
+            action = db.get(OzonAssembly, job.id)
+            order = db.get(Order, (job.account_key, job.posting_number), with_for_update=True)
+            if action is None or action.started_at is not None or order is None or order.status != "awaiting_packaging":
+                raise HTTPException(409, "Заказ Ozon уже изменён или сборка уже начата")
+            action.started_at = now()
+            job.lease_until = action.started_at + timedelta(seconds=90)
+            return Response(status_code=204)
         action = db.get(WbAssembly, job.id) if job.kind == WB_ASSEMBLY_KIND else None
         if action is None or action.started_at is not None:
             raise HTTPException(409, "Перевод уже начат или недоступен")
@@ -215,6 +244,30 @@ def complete_job(job_id: UUID, body: Completion, auth: Agent, token: Lease):
                 db.execute(update(Job).where(
                     Job.kind == "sync_orders", Job.account_key == WB_ACCOUNT, Job.state == "pending",
                     Job.available_at > now(),
+                ).values(available_at=now()))
+            elif job.kind == OZON_ASSEMBLY_KIND:
+                action = db.get(OzonAssembly, job.id)
+                order = db.get(Order, (job.account_key, job.posting_number), with_for_update=True)
+                if (action is None or action.started_at is None or order is None
+                        or body.assembly_status != "awaiting_deliver"
+                        or order.status not in ("awaiting_packaging", "awaiting_deliver")):
+                    raise HTTPException(422, "Ozon не подтвердил сборку отправления")
+                order.status = "awaiting_deliver"
+                order.data = {**order.data, "status": "awaiting_deliver"}
+                if action.print_after:
+                    label_job_id = enqueue(db, "label_pdf", job.account_key, job.posting_number)
+                    if label_job_id is None:
+                        label_job_id = db.scalar(select(Job.id).where(
+                            Job.kind == "label_pdf", Job.account_key == job.account_key,
+                            Job.posting_number == job.posting_number, Job.state.in_(ACTIVE),
+                        ))
+                    if label_job_id is None:
+                        raise HTTPException(409, "Не удалось создать задание этикетки")
+                    action.label_job_id = label_job_id
+                enqueue(db, "sync_orders", job.account_key)
+                db.execute(update(Job).where(
+                    Job.kind == "sync_orders", Job.account_key == job.account_key,
+                    Job.state == "pending", Job.available_at > now(),
                 ).values(available_at=now()))
             elif job.kind == "sync_orders" and body.result is not None:
                 try:
@@ -260,6 +313,11 @@ def publish_pdf(job_id, token, data, *, wb=False):
         job.state = "ready"
         job.label_until = now() + timedelta(hours=24)
         job.lease_until = None
+        action = db.scalar(select(OzonAssembly).where(OzonAssembly.label_job_id == job.id).with_for_update())
+        if action is not None and action.print_after and action.print_task_id is None:
+            order = db.get(Order, (job.account_key, job.posting_number))
+            if order is not None:
+                action.print_task_id = queue_print(db, job.account_key, [batch_item(order, job.id, False)])
 
 
 async def read_label_upload(request, content_type):
@@ -384,6 +442,12 @@ def orders(request: Request, account: str = "all", hide_printed: bool = False, s
         if hide_printed:
             query = query.where(or_(LabelPrint.posting_number.is_(None), OrderWaiting.posting_number.is_not(None)))
         records = db.execute(query).all()
+        ozon_assembly_accounts = {key for key in keys if key in OZON_ACCOUNTS and db.get(
+            Heartbeat, OZON_ASSEMBLY_HEARTBEAT_BASE + int(key),
+        ) and db.get(Heartbeat, OZON_ASSEMBLY_HEARTBEAT_BASE + int(key)).seen_at >= now() - timedelta(seconds=120)}
+        ozon_print_accounts = {key for key in keys if key in OZON_ACCOUNTS and db.get(
+            Heartbeat, OZON_PRINT_HEARTBEAT_BASE + int(key),
+        ) and db.get(Heartbeat, OZON_PRINT_HEARTBEAT_BASE + int(key)).seen_at >= now() - timedelta(seconds=120)}
     records.sort(key=lambda row: (row[0].data.get("shipment_date") or "~", row[0].posting_number))
     orders_by_status = {status: [] for status in labels}
     waiting_orders = []
@@ -420,6 +484,8 @@ def orders(request: Request, account: str = "all", hide_printed: bool = False, s
         "shift_loading": recent_shift and any(cabinet.updated_at is None and not cabinet.error for cabinet in cabinets),
         "has_printable": has_printable,
         "online": bool(seen and seen.seen_at >= now() - timedelta(seconds=120)),
+        "ozon_assembly_accounts": ozon_assembly_accounts,
+        "ozon_print_accounts": ozon_print_accounts,
     })
 
 
@@ -472,6 +538,56 @@ def refresh_book_storage(request: Request, account: Annotated[AccountFilter, For
 def wb_write_online(db):
     agent = db.get(Heartbeat, WB_AUTO_ASSEMBLY_HEARTBEAT_ID)
     return bool(agent and agent.seen_at >= now() - timedelta(seconds=120))
+
+
+def ozon_capability_online(db, account_key, *, printing=False):
+    heartbeat_id = (OZON_PRINT_HEARTBEAT_BASE if printing else OZON_ASSEMBLY_HEARTBEAT_BASE) + int(account_key)
+    agent = db.get(Heartbeat, heartbeat_id)
+    return bool(agent and agent.seen_at >= now() - timedelta(seconds=120))
+
+
+@app.post("/orders/{account_key}/{posting_number}/assembly")
+def request_ozon_assembly(request: Request, account_key: Account, posting_number: str,
+                          print_after: Annotated[bool, Form()] = False):
+    require_dashboard_origin(request)
+    if account_key not in OZON_ACCOUNTS:
+        raise HTTPException(404, "Отправление Ozon не найдено")
+    with write_transaction() as db:
+        order = db.get(Order, (account_key, posting_number), with_for_update=True)
+        if order is None or order.status != "awaiting_packaging":
+            raise HTTPException(409, "Заказ больше не ожидает сборки")
+        if not ozon_capability_online(db, account_key):
+            raise HTTPException(409, "Локальный агент Ozon с правом сборки сейчас не в сети")
+        if print_after and not ozon_capability_online(db, account_key, printing=True):
+            raise HTTPException(409, "Для прямой печати запустите агент на Mac с настроенным принтером")
+        job_id = enqueue(db, OZON_ASSEMBLY_KIND, account_key, posting_number)
+        if job_id is not None:
+            db.add(OzonAssembly(job_id=job_id, print_after=print_after))
+        else:
+            job_id = db.scalar(select(Job.id).where(
+                Job.kind == OZON_ASSEMBLY_KIND, Job.account_key == account_key,
+                Job.posting_number == posting_number, Job.state.in_(ACTIVE),
+            ))
+            if job_id is None:
+                raise HTTPException(409, "Сборка этого заказа уже обрабатывается")
+            action = db.get(OzonAssembly, job_id)
+            if action is None or action.print_after != print_after:
+                raise HTTPException(409, "Для заказа уже выполняется другое действие")
+    return RedirectResponse(f"/ozon-assembly/{job_id}", status_code=303)
+
+
+@app.get("/ozon-assembly/{job_id}")
+def ozon_assembly_status(request: Request, job_id: UUID):
+    with Session() as db:
+        job = db.get(Job, job_id)
+        action = db.get(OzonAssembly, job_id) if job and job.kind == OZON_ASSEMBLY_KIND else None
+        if action is None:
+            raise HTTPException(404, "Задание сборки Ozon не найдено")
+        label_job = db.get(Job, action.label_job_id) if action.label_job_id else None
+        print_task = db.get(PrintTask, action.print_task_id) if action.print_task_id else None
+    return templates.TemplateResponse(request, "ozon_assembly_status.html", {
+        "job": job, "action": action, "label_job": label_job, "print_task": print_task,
+    })
 
 
 @app.get("/orders/w/{posting_number}/assembly")

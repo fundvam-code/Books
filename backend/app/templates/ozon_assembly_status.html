@@ -1,0 +1,37 @@
+{% extends "base.html" %}
+{% block title %}Сборка Ozon{% endblock %}
+{% block head %}
+{% if job.state in ('pending', 'leased') or (action.print_after and label_job and label_job.state in ('pending', 'leased')) or (action.print_after and print_task and print_task.state in ('pending', 'leased', 'sending')) %}
+<script src="/static/label.js" defer></script>
+{% endif %}
+{% endblock %}
+{% block content %}
+<a class="back" href="/orders?account={{ job.account_key }}">← К заказам</a>
+<div class="heading"><h1>{% if action.print_after %}Собрать и напечатать{% else %}Отправить в сборку{% endif %}</h1></div>
+<section class="panel" aria-live="polite">
+  <p>Отправление № {{ job.posting_number }}</p>
+  {% if job.state == 'failed' %}
+    <p class="error" role="alert">{{ job.error or 'Не удалось выполнить сборку Ozon.' }}</p>
+  {% elif job.state in ('pending', 'leased') %}
+    <p>Локальный агент отправляет заказ на сборку и проверяет статус в Ozon.</p>
+  {% elif not action.print_after %}
+    <p>Сборка подтверждена Ozon. Отправление появится в колонке «Собраны — ждут отгрузки» после обновления списка.</p>
+  {% elif not label_job %}
+    <p>Сборка подтверждена. Создаём задание на этикетку.</p>
+  {% elif label_job.state == 'failed' %}
+    <p class="error" role="alert">Заказ собран, но этикетку получить не удалось. {{ label_job.error or '' }}</p>
+  {% elif label_job.state in ('pending', 'leased') %}
+    <p>Заказ собран. Загружаем PDF этикетки.</p>
+  {% elif not print_task %}
+    <p>PDF этикетки готов. Передаём его принтеру.</p>
+  {% elif print_task.state == 'submitted' %}
+    <p>Заказ собран, этикетка передана в очередь принтера. Статус отмечен как «Напечатано».</p>
+  {% elif print_task.state == 'failed' %}
+    <p class="error" role="alert">Заказ собран, но принтер не принял этикетку. Проверьте принтер и очередь печати.</p>
+  {% elif print_task.state == 'unknown' %}
+    <p class="error" role="alert">Заказ собран. Агент не подтвердил печать. Проверьте очередь принтера перед повтором.</p>
+  {% else %}
+    <p>Заказ собран. Агент отправляет PDF на принтер.</p>
+  {% endif %}
+</section>
+{% endblock %}

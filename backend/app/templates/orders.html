@@ -9,7 +9,11 @@
 {% block content %}
 {% macro order_card(order, printed, label_job_id, waiting) %}
     {% set number = label_number(label_job_id, order.account_key) %}
-    <article class="card" data-order-label>
+    {% set ns = namespace(has_storage=false) %}
+    {% for product in order.data.products %}
+      {% if storage_match(product) %}{% set ns.has_storage = true %}{% endif %}
+    {% endfor %}
+    <article class="card{% if ns.has_storage %} has-storage{% endif %}" data-order-label>
       <div class="card-title">
         <div>
           <a href="/orders/{{ order.account_key }}/{{ order.posting_number }}">{{ order.posting_number }}</a>
@@ -26,7 +30,21 @@
         {% endfor %}
         {% if order.data.products|length > 3 %}<li>Ещё {{ order.data.products|length - 3 }}</li>{% endif %}
       </ul>
-      {% if waiting %}
+      {% if order.status == 'awaiting_packaging' and order.account_key in ('1', '2') %}
+      <div class="assembly-actions">
+        {% if order.account_key in ozon_assembly_accounts %}
+        <form action="/orders/{{ order.account_key }}/{{ order.posting_number }}/assembly" method="post">
+          <button class="button secondary" type="submit">Отправить в сборку</button>
+        </form>
+        {% if order.account_key in ozon_print_accounts %}
+        <form action="/orders/{{ order.account_key }}/{{ order.posting_number }}/assembly" method="post">
+          <input type="hidden" name="print_after" value="true">
+          <button class="button" type="submit">Собрать и напечатать</button>
+        </form>
+        {% else %}<span class="muted">Для печати запустите агент на Mac с настроенным принтером.</span>{% endif %}
+        {% else %}<span class="muted">Агент Ozon с правом сборки не в сети.</span>{% endif %}
+      </div>
+      {% elif waiting %}
       <span class="tag offline">В ожидании</span>
       {% elif order.status in label_statuses %}
       {{ label_controls(order, printed, label_job_id, return_account=account, hide_printed=hide_printed, hide_waiting=hide_waiting) }}
