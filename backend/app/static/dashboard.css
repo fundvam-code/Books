@@ -45,7 +45,23 @@ h2 { font-size: 1.1rem; margin: 0 0 1rem; }
 .product-summary { display: flex; align-items: center; gap: .5rem; min-width: 0; }
 .book-cover-wrap { position: relative; display: inline-flex; flex: 0 0 auto; align-items: center; }
 .book-cover-thumb { display: block; width: 2.35rem; height: 3.2rem; object-fit: contain; border-radius: .2rem; }
-.book-cover-zoom { display: none; position: absolute; z-index: 10; left: 0; top: 50%; width: 9rem; max-height: 13rem; object-fit: contain; transform: translateY(-50%); padding: .2rem; border: 1px solid var(--line); border-radius: .3rem; background: white; box-shadow: 0 5px 20px #14233b44; pointer-events: none; }
+.book-cover-zoom {
+  display: none;
+  position: fixed;
+  z-index: 10;
+  left: 50%;
+  top: 50%;
+  width: min(27rem, calc(100vw - 2rem));
+  max-height: min(39rem, calc(100vh - 2rem));
+  object-fit: contain;
+  transform: translate(-50%, -50%);
+  padding: .2rem;
+  border: 1px solid var(--line);
+  border-radius: .3rem;
+  background: white;
+  box-shadow: 0 5px 20px #14233b44;
+  pointer-events: none;
+}
 .book-cover-wrap:hover .book-cover-zoom { display: block; }
 .button { display: inline-block; font: inherit; font-size: .9rem; border: 1px solid var(--accent); border-radius: .45rem; padding: .4rem .75rem; color: #fff; background: var(--accent); text-decoration: none; cursor: pointer; }
 .button.secondary { color: #1a4b8d; border-color: #b5c8e2; background: #f1f6ff; }
