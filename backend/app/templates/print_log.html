@@ -1,7 +1,7 @@
 {% extends "base.html" %}
 {% block title %}Журнал печати{% endblock %}
 {% block content %}
-<a class="back" href="/orders">← К отправлениям</a>
+<a class="back" href="{{ back_url }}">← К отправлениям</a>
 <div class="heading"><h1>Журнал печати</h1></div>
 <p>Задания, которые агент передал в очередь принтера.</p>
 {% if rows %}
@@ -28,8 +28,8 @@
 {% endif %}
 {% if page > 1 or has_next %}
 <nav class="tabs" aria-label="Страницы журнала">
-  {% if page > 1 %}<a href="/print-log?page={{ page - 1 }}">Предыдущая</a>{% endif %}
-  {% if has_next %}<a href="/print-log?page={{ page + 1 }}">Следующая</a>{% endif %}
+  {% if page > 1 %}<a href="/print-log?page={{ page - 1 }}&amp;{{ return_query }}">Предыдущая</a>{% endif %}
+  {% if has_next %}<a href="/print-log?page={{ page + 1 }}&amp;{{ return_query }}">Следующая</a>{% endif %}
 </nav>
 {% endif %}
 {% endblock %}

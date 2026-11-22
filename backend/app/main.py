@@ -808,7 +808,8 @@ def finish_print(task_id: UUID, body: PrintResult, auth: Agent, token: Lease):
 
 
 @app.get("/print-log")
-def print_log(request: Request, page: Annotated[int, Query(ge=1, le=1_000_000)] = 1):
+def print_log(request: Request, page: Annotated[int, Query(ge=1, le=1_000_000)] = 1,
+              account: AccountFilter = "all", hide_printed: bool = False, hide_waiting: bool = True):
     page_size = 50
     with Session() as db:
         rows = db.scalars(select(PrintLog).order_by(
@@ -816,6 +817,8 @@ def print_log(request: Request, page: Annotated[int, Query(ge=1, le=1_000_000)] 
         ).offset((page - 1) * page_size).limit(page_size + 1)).all()
     return templates.TemplateResponse(request, "print_log.html", {
         "rows": rows[:page_size], "page": page, "has_next": len(rows) > page_size,
+        "back_url": orders_url(account, hide_printed, hide_waiting),
+        "return_query": orders_query(account, hide_printed, hide_waiting),
     })
 
 

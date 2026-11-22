@@ -130,7 +130,7 @@
   {% endfor %}
 </section>
 <footer class="orders-footer" id="book-storage">
-  <a href="/print-log">Журнал печати</a>
+  <a href="/print-log?{{ orders_query(account, hide_printed, hide_waiting) }}">Журнал печати</a>
   <a class="button secondary" href="/shift/start">Начало смены</a>
   <form action="/book-storage/refresh" method="post">
     <input type="hidden" name="account" value="{{ account }}">
