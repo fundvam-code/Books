@@ -46,7 +46,7 @@ templates = Jinja2Templates(directory=ROOT / "templates")
 cabinet_names = {"1": "Золотая антилопа", "2": "Зеленая книга", WB_ACCOUNT: "Wildberries"}
 templates.env.globals.update(cabinet_names=cabinet_names, label_statuses=LABEL_STATUSES, wb_account=WB_ACCOUNT)
 labels = dict(zip((*OZON_STATUSES, *WB_BOARD_STATUSES),
-                  ("Ожидают сборки", "Собраны - ждут печати", "Новые", "На сборке")))
+                  ("Ожидают сборки", "Собраны - ждут печати") * 2))
 
 
 def format_msk(value: datetime | str | None) -> str:
@@ -631,7 +631,7 @@ def request_wb_assembly(request: Request, posting_number: str,
     with write_transaction() as db:
         order = db.get(Order, (WB_ACCOUNT, posting_number), with_for_update=True)
         if order is None or order.status != "wb_new":
-            raise HTTPException(409, "Задание больше не находится в «Новых»")
+            raise HTTPException(409, "Заказ больше не ожидает сборки")
         if not wb_write_online(db):
             raise HTTPException(409, "Агент с настроенным WB_WRITE_TOKEN сейчас недоступен")
         job_id = enqueue(db, WB_ASSEMBLY_KIND, WB_ACCOUNT, posting_number)

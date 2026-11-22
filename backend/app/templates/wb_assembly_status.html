@@ -29,7 +29,7 @@
     <p>Стикер готов. Ожидаем отправку на принтер.</p>
     {% endif %}
   {% elif job.state == 'done' %}
-  <p>Wildberries подтвердил перенос. Задание появится в колонке «На сборке» после обновления списка.</p>
+  <p>Wildberries подтвердил перенос. Заказ появится в колонке «Собраны - ждут печати» после обновления списка.</p>
   {% elif job.state == 'failed' %}
   <p class="error" role="alert">{{ job.error }}</p>
   {% elif action.started_at %}
