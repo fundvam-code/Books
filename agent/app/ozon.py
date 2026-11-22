@@ -80,6 +80,7 @@ class Ozon:
         offer_ids = sorted({product["offer_id"] for order in orders.values() for product in order["products"]
                             if product["offer_id"]})
         metadata = {}
+        offers_by_product_id = {}
         try:
             for offset in range(0, len(offer_ids), 1000):
                 reply = await self.post("/v3/product/info/list", {"offer_id": offer_ids[offset:offset + 1000]})
@@ -88,6 +89,9 @@ class Ozon:
                     raise OzonError("response", True)
                 for item in items:
                     if isinstance(item, dict) and isinstance(item.get("offer_id"), str):
+                        product_id = value_text(item.get("id"))
+                        if product_id.isascii() and product_id.isdecimal() and int(product_id) > 0:
+                            offers_by_product_id[product_id] = item["offer_id"]
                         image = first_image_url(item.get("primary_image")) or first_image_url(item.get("images"))
                         metadata[item["offer_id"]] = {
                             "image_url": image, "image_full_url": image,
@@ -95,6 +99,23 @@ class Ozon:
                         }
         except (OzonError, KeyError, TypeError, ValueError) as error:
             product_info_status = "denied" if getattr(error, "code", None) == "access" else "unavailable"
+        try:
+            product_ids = list(offers_by_product_id)
+            for offset in range(0, len(product_ids), 1000):
+                reply = await self.post("/v2/product/pictures/info", {"product_id": product_ids[offset:offset + 1000]})
+                items = reply.get("items")
+                if not isinstance(items, list):
+                    break
+                for item in items:
+                    if not isinstance(item, dict):
+                        continue
+                    offer_id = offers_by_product_id.get(value_text(item.get("product_id")))
+                    primary = first_image_url(item.get("primary_photo"))
+                    if offer_id is not None and primary:
+                        metadata[offer_id].update(image_url=primary, image_full_url=primary)
+        except (OzonError, ValueError):
+            # Keep the product data available when the separate photo lookup fails.
+            pass
         for order in orders.values():
             for product in order["products"]:
                 product.update(metadata.get(product["offer_id"], {}))
