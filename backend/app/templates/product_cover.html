@@ -1,6 +1,6 @@
 {% if product.image_url %}
 <span class="book-cover-wrap" aria-label="Обложка книги">
   <img class="book-cover-thumb" src="{{ product.image_url }}" alt="" loading="lazy">
-  {% if product.image_full_url %}<img class="book-cover-zoom" src="{{ product.image_full_url }}" alt="" loading="lazy">{% endif %}
+  <img class="book-cover-zoom" src="{{ product.image_url }}" alt="" loading="lazy">
 </span>
 {% endif %}

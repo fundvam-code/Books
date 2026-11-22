@@ -577,38 +577,6 @@ def ozon_capability_online(db, account_key, *, printing=False):
     return bool(agent and agent.seen_at >= now() - timedelta(seconds=120))
 
 
-@app.post("/orders/{account_key}/{posting_number}/assembly")
-def request_ozon_assembly(request: Request, account_key: Account, posting_number: str,
-                          print_after: Annotated[bool, Form()] = False):
-    require_dashboard_origin(request)
-    if account_key not in OZON_ACCOUNTS:
-        raise HTTPException(404, "Отправление Ozon не найдено")
-    with write_transaction() as db:
-        order = db.get(Order, (account_key, posting_number), with_for_update=True)
-        if order is None or order.status != "awaiting_packaging":
-            raise HTTPException(409, "Заказ больше не ожидает сборки")
-        if db.get(OrderWaiting, (account_key, posting_number)):
-            raise HTTPException(409, "Сначала верните отправление из ожидания")
-        if not ozon_capability_online(db, account_key):
-            raise HTTPException(409, "Локальный агент Ozon с правом сборки сейчас не в сети")
-        if print_after and not ozon_capability_online(db, account_key, printing=True):
-            raise HTTPException(409, "Для прямой печати запустите агент на Mac с настроенным принтером")
-        job_id = enqueue(db, OZON_ASSEMBLY_KIND, account_key, posting_number)
-        if job_id is not None:
-            db.add(OzonAssembly(job_id=job_id, print_after=print_after))
-        else:
-            job_id = db.scalar(select(Job.id).where(
-                Job.kind == OZON_ASSEMBLY_KIND, Job.account_key == account_key,
-                Job.posting_number == posting_number, Job.state.in_(ACTIVE),
-            ))
-            if job_id is None:
-                raise HTTPException(409, "Сборка этого заказа уже обрабатывается")
-            action = db.get(OzonAssembly, job_id)
-            if action is None or action.print_after != print_after:
-                raise HTTPException(409, "Для заказа уже выполняется другое действие")
-    return RedirectResponse(f"/ozon-assembly/{job_id}", status_code=303)
-
-
 @app.get("/ozon-assembly/{job_id}")
 def ozon_assembly_status(request: Request, job_id: UUID):
     with Session() as db:
@@ -668,6 +636,39 @@ def request_wb_assembly(request: Request, posting_number: str,
             if db.get(WbAssembly, job_id).print_after != print_after:
                 raise HTTPException(409, "Для заказа уже выполняется другое действие")
     return RedirectResponse(f"/wb-assembly/{job_id}", status_code=303)
+
+
+# Register the specific Wildberries route before the account route.
+@app.post("/orders/{account_key}/{posting_number}/assembly")
+def request_ozon_assembly(request: Request, account_key: Account, posting_number: str,
+                          print_after: Annotated[bool, Form()] = False):
+    require_dashboard_origin(request)
+    if account_key not in OZON_ACCOUNTS:
+        raise HTTPException(404, "Отправление Ozon не найдено")
+    with write_transaction() as db:
+        order = db.get(Order, (account_key, posting_number), with_for_update=True)
+        if order is None or order.status != "awaiting_packaging":
+            raise HTTPException(409, "Заказ больше не ожидает сборки")
+        if db.get(OrderWaiting, (account_key, posting_number)):
+            raise HTTPException(409, "Сначала верните отправление из ожидания")
+        if not ozon_capability_online(db, account_key):
+            raise HTTPException(409, "Локальный агент Ozon с правом сборки сейчас не в сети")
+        if print_after and not ozon_capability_online(db, account_key, printing=True):
+            raise HTTPException(409, "Для прямой печати запустите агент на Mac с настроенным принтером")
+        job_id = enqueue(db, OZON_ASSEMBLY_KIND, account_key, posting_number)
+        if job_id is not None:
+            db.add(OzonAssembly(job_id=job_id, print_after=print_after))
+        else:
+            job_id = db.scalar(select(Job.id).where(
+                Job.kind == OZON_ASSEMBLY_KIND, Job.account_key == account_key,
+                Job.posting_number == posting_number, Job.state.in_(ACTIVE),
+            ))
+            if job_id is None:
+                raise HTTPException(409, "Сборка этого заказа уже обрабатывается")
+            action = db.get(OzonAssembly, job_id)
+            if action is None or action.print_after != print_after:
+                raise HTTPException(409, "Для заказа уже выполняется другое действие")
+    return RedirectResponse(f"/ozon-assembly/{job_id}", status_code=303)
 
 
 @app.get("/wb-assembly/{job_id}")
