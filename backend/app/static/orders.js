@@ -35,7 +35,7 @@ async function refreshStageCounts() {
     }
 }
 
-setInterval(refreshStageCounts, 5000);
+setInterval(refreshStageCounts, 60_000);
 document.addEventListener("visibilitychange", () => {
     if (!document.hidden) refreshStageCounts();
 });
