@@ -43,13 +43,16 @@
         </form>
         {% else %}<span class="muted">Для печати запустите агент на Mac с настроенным принтером.</span>{% endif %}
         {% else %}<span class="muted">Агент Ozon с правом сборки не в сети.</span>{% endif %}
+        {{ waiting_control(order, waiting, return_account=account, hide_printed=hide_printed, hide_waiting=hide_waiting) }}
       </div>
-      {% elif order.status in label_statuses and not waiting %}
-      {{ label_controls(order, printed, label_job_id, return_account=account, hide_printed=hide_printed, hide_waiting=hide_waiting) }}
       {% elif order.status == 'wb_new' %}
       {% include "wb_assembly_actions.html" %}
+      {% else %}
+      {% if order.status in label_statuses and not waiting %}
+      {{ label_controls(order, printed, label_job_id, return_account=account, hide_printed=hide_printed, hide_waiting=hide_waiting) }}
       {% endif %}
       {{ waiting_control(order, waiting, return_account=account, hide_printed=hide_printed, hide_waiting=hide_waiting) }}
+      {% endif %}
     </article>
 {% endmacro %}
 <div class="heading">

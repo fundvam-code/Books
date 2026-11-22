@@ -4,4 +4,5 @@
   <form action="/orders/w/{{ order.posting_number }}/assembly?{{ return_query }}" method="post">
     <button class="button" type="submit" name="print_after" value="true">Собрать и напечатать</button>
   </form>
+  {{ waiting_control(order, waiting, return_account=account|default(none), hide_printed=hide_printed|default(false), hide_waiting=hide_waiting|default(true)) }}
 </div>

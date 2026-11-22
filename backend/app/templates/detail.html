@@ -34,7 +34,7 @@
   {% elif order.status == 'wb_new' %}
   {% include "wb_assembly_actions.html" %}
   {% endif %}
-  {{ waiting_control(order, waiting) }}
+  {% if waiting or order.status != 'wb_new' %}{{ waiting_control(order, waiting) }}{% endif %}
 </section>
 </div>
 <section class="panel">

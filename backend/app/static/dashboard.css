@@ -82,6 +82,7 @@ h2 { font-size: 1.1rem; margin: 0 0 1rem; }
 .waiting-action { margin-top: .5rem; }
 .assembly-actions { display: flex; align-items: center; gap: .4rem; margin-top: .6rem; }
 .assembly-actions > form { min-width: 0; }
+.assembly-actions > .waiting-action { margin-top: 0; }
 .assembly-actions .button { padding: .3rem .55rem; }
 .waiting-list { margin-top: 1rem; }
 .print-option { display: inline-block; margin-bottom: .4rem; }
