@@ -599,8 +599,15 @@ def ozon_assembly_status(request: Request, job_id: UUID):
             raise HTTPException(404, "Задание сборки Ozon не найдено")
         label_job = db.get(Job, action.label_job_id) if action.label_job_id else None
         print_task = db.get(PrintTask, action.print_task_id) if action.print_task_id else None
+        order = db.get(Order, (job.account_key, job.posting_number))
+        title = book_title(order)
+        if not title and print_task:
+            batch = db.get(LabelBatch, print_task.batch_id)
+            if batch:
+                title = next((item["book_title"] for item in batch.labels if item.get("book_title")), "")
     return templates.TemplateResponse(request, "ozon_assembly_status.html", {
         "job": job, "action": action, "label_job": label_job, "print_task": print_task,
+        "title": title,
     })
 
 

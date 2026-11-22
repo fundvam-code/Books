@@ -9,7 +9,10 @@
 <a class="back" href="/orders?account={{ job.account_key }}">← К заказам</a>
 <div class="heading"><h1>{% if action.print_after %}Собрать и напечатать{% else %}Отправить в сборку{% endif %}</h1></div>
 <section class="panel" aria-live="polite">
-  <p>Отправление № {{ job.posting_number }}</p>
+  <dl class="details">
+    <div><dt>Номер отправления</dt><dd>{{ job.posting_number }}</dd></div>
+    <div><dt>Название книги</dt><dd>{{ title or '—' }}</dd></div>
+  </dl>
   {% if job.state == 'failed' %}
     <p class="error" role="alert">{{ job.error or 'Не удалось выполнить сборку Ozon.' }}</p>
   {% elif job.state in ('pending', 'leased') %}
