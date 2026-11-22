@@ -1,0 +1,2 @@
+{% set locations = storage_locations(product) %}
+{% if locations %}<small class="storage-location">Место хранения · {{ locations|join(' · ') }}</small>{% endif %}

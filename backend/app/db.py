@@ -28,6 +28,14 @@ class Shift(Base):
     started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
 
+class BookStorage(Base):
+    __tablename__ = "book_storage"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    entries: Mapped[list] = mapped_column(JSONB)
+
+
 class Order(Base):
     __tablename__ = "orders"
 

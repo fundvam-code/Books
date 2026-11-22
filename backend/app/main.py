@@ -1,4 +1,5 @@
 import asyncio
+import csv
 import logging
 import os
 from contextlib import asynccontextmanager, suppress
@@ -10,6 +11,7 @@ from typing import Annotated, Literal
 from urllib.parse import quote, urlencode
 from uuid import UUID
 
+import httpx
 from fastapi import Depends, FastAPI, Form, Header, HTTPException, Query, Request, Response
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
@@ -22,7 +24,8 @@ from pypdfium2 import PdfiumError
 from sqlalchemy import and_, delete, desc, func, or_, select, update
 from sqlalchemy.dialects.postgresql import insert
 
-from .db import (Cabinet, Heartbeat, Job, LabelBatch, LabelPrint, Order, OrderWaiting, PrintLog, PrintTask, Session, Shift, WbAssembly,
+from .book_storage import StorageLookup, refresh_catalog
+from .db import (BookStorage, Cabinet, Heartbeat, Job, LabelBatch, LabelPrint, Order, OrderWaiting, PrintLog, PrintTask, Session, Shift, WbAssembly,
                  write_transaction)
 from .jobs import (ACTIVE, LABEL_STATUSES, OZON_ACCOUNTS, OZON_STATUSES, PDF_LIMIT, WB_ACCOUNT, WB_ASSEMBLY_KIND,
                    WB_AUTO_ASSEMBLY_HEARTBEAT_ID, WB_BOARD_STATUSES,
@@ -364,7 +367,7 @@ def get_or_enqueue_label(db, order):
 
 @app.get("/orders")
 def orders(request: Request, account: str = "all", hide_printed: bool = False, shift_started: UUID | None = None,
-           hide_waiting: bool = True):
+           hide_waiting: bool = True, storage_refresh: Literal["updated", "failed", "unconfigured"] | None = None):
     with Session() as db:
         registered = {cabinet.key: cabinet for cabinet in db.scalars(select(Cabinet).order_by(Cabinet.key))}
         if account != "all" and account not in registered:
@@ -372,6 +375,7 @@ def orders(request: Request, account: str = "all", hide_printed: bool = False, s
         keys = tuple(registered) if account == "all" else (account,)
         cabinets = [registered[key] for key in keys]
         seen = db.get(Heartbeat, 1)
+        catalog = db.get(BookStorage, 1)
         shift = db.get(Shift, 1) if shift_started else None
         recent_shift = bool(shift and shift.revision == shift_started and shift.started_at
                             and now() < shift.started_at + timedelta(seconds=90))
@@ -408,6 +412,9 @@ def orders(request: Request, account: str = "all", hide_printed: bool = False, s
         ],
         "hide_printed": hide_printed,
         "hide_waiting": hide_waiting,
+        "storage_locations": StorageLookup(catalog.entries if catalog else []).locations,
+        "storage_updated_at": catalog.updated_at if catalog else None,
+        "storage_refresh": storage_refresh,
         "waiting_orders": waiting_orders,
         "recent_shift": recent_shift,
         "shift_loading": recent_shift and any(cabinet.updated_at is None and not cabinet.error for cabinet in cabinets),
@@ -430,6 +437,7 @@ def detail(request: Request, account_key: Account, posting_number: str):
             Order.account_key == account_key, Order.posting_number == posting_number,
             Order.status.in_(tuple(labels)),
         )).one_or_none()
+        catalog = db.get(BookStorage, 1)
     if row is None:
         raise HTTPException(404, "Активное отправление не найдено")
     order, printed, job_id, waiting = row
@@ -437,12 +445,28 @@ def detail(request: Request, account_key: Account, posting_number: str):
         "order": order, "data": order.data, "status_label": labels[order.status],
         "printed": printed, "label_job_id": job_id if pdf_is_available(job_id) else None,
         "waiting": waiting and order.status in LABEL_STATUSES,
+        "storage_locations": StorageLookup(catalog.entries if catalog else []).locations,
     })
 
 
 def require_dashboard_origin(request: Request):
     if request.headers.get("origin") != "https://" + os.environ["PUBLIC_DOMAIN"]:
         raise HTTPException(403, "Откройте форму печати в дашборде")
+
+
+@app.post("/book-storage/refresh")
+def refresh_book_storage(request: Request, account: Annotated[AccountFilter, Form()] = "all",
+                         hide_printed: Annotated[bool, Form()] = False,
+                         hide_waiting: Annotated[bool, Form()] = True):
+    if request.headers.get("origin") != "https://" + os.environ["PUBLIC_DOMAIN"]:
+        raise HTTPException(403, "Откройте дашборд для обновления мест хранения")
+    try:
+        result = refresh_catalog()
+    except (httpx.HTTPError, csv.Error, ValueError) as error:
+        logging.getLogger(__name__).warning("Не удалось обновить места хранения (%s)", type(error).__name__)
+        result = "failed"
+    return RedirectResponse(f"{orders_url(account, hide_printed, hide_waiting)}&storage_refresh={result}#book-storage",
+                            status_code=303)
 
 
 def wb_write_online(db):

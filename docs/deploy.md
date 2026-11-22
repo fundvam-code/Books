@@ -33,6 +33,8 @@ docker compose --env-file .env.server -f compose.server.yaml up -d --build --wai
 docker compose --env-file .env.server -f compose.server.yaml ps
 ```
 
+Для каталога мест хранения укажите ID таблицы в `BOOK_STORAGE_SHEET_ID` и номер вкладки из параметра `gid` в `BOOK_STORAGE_SHEET_GID` файла `.env.server`. Сервер читает CSV с колонками «Название», «Место», «Статус» и «ISBN». После запуска нажмите «Обновить места хранения» внизу дашборда.
+
 ## ПК с агентом
 
 ```bash

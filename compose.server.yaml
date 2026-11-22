@@ -22,6 +22,8 @@ services:
       PUBLIC_DOMAIN: ${PUBLIC_DOMAIN:?Укажите домен}
       AGENT_SHARED_SECRET: ${AGENT_SHARED_SECRET:?Укажите секрет агента}
       LABEL_DIR: /labels
+      BOOK_STORAGE_SHEET_ID: ${BOOK_STORAGE_SHEET_ID:-}
+      BOOK_STORAGE_SHEET_GID: ${BOOK_STORAGE_SHEET_GID:-1001}
     depends_on:
       database:
         condition: service_healthy

@@ -44,7 +44,7 @@
   <div class="table"><table>
     <thead><tr><th scope="col">Название</th><th scope="col">Артикул</th><th scope="col">SKU</th><th scope="col">Количество</th><th scope="col">Цена за шт.</th></tr></thead>
     <tbody>{% for product in data.products %}
-      <tr><td>{{ product.name or '—' }}</td><td>{{ product.offer_id or '—' }}</td><td>{{ product.sku or '—' }}</td><td>{{ product.quantity }}</td><td>{{ product.price or '—' }}</td></tr>
+      <tr><td>{{ product.name or '—' }}{% include "product_storage.html" %}</td><td>{{ product.offer_id or '—' }}</td><td>{{ product.sku or '—' }}</td><td>{{ product.quantity }}</td><td>{{ product.price or '—' }}</td></tr>
     {% else %}<tr><td colspan="5">Нет данных о товарах.</td></tr>{% endfor %}</tbody>
   </table></div>
 </section>

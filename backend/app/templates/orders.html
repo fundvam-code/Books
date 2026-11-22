@@ -22,7 +22,7 @@
       {% endif %}
       <ul class="products">
         {% for product in order.data.products[:3] %}
-        <li><span>{{ product.name or product.offer_id or 'Товар' }}</span><strong>× {{ product.quantity }}</strong></li>
+        <li><span>{{ product.name or product.offer_id or 'Товар' }}{% include "product_storage.html" %}</span><strong>× {{ product.quantity }}</strong></li>
         {% endfor %}
         {% if order.data.products|length > 3 %}<li>Ещё {{ order.data.products|length - 3 }}</li>{% endif %}
       </ul>
@@ -104,8 +104,18 @@
   <p class="empty">Нет отправлений в ожидании.</p>
   {% endfor %}
 </section>
-<footer class="orders-footer">
+<footer class="orders-footer" id="book-storage">
   <a href="/print-log">Журнал печати</a>
   <a class="button secondary" href="/shift/start">Начало смены</a>
+  <form action="/book-storage/refresh" method="post">
+    <input type="hidden" name="account" value="{{ account }}">
+    {% if hide_printed %}<input type="hidden" name="hide_printed" value="true">{% endif %}
+    {% if not hide_waiting %}<input type="hidden" name="hide_waiting" value="false">{% endif %}
+    <button class="button secondary" type="submit">Обновить места хранения</button>
+  </form>
+  {% if storage_updated_at %}<small class="muted">Каталог обновлён {{ storage_updated_at|msk }}</small>{% endif %}
 </footer>
+{% if storage_refresh == 'updated' %}<p role="status">Места хранения обновлены.</p>
+{% elif storage_refresh == 'failed' %}<p class="error" role="alert">Не удалось обновить места хранения. Показаны данные последней успешной загрузки.</p>
+{% elif storage_refresh == 'unconfigured' %}<p class="error" role="alert">Для мест хранения не настроена таблица Google Sheets.</p>{% endif %}
 {% endblock %}
