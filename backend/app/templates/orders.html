@@ -14,49 +14,53 @@
       {% if storage_match(product) %}{% set ns.has_storage = true %}{% endif %}
     {% endfor %}
     <article class="card{% if ns.has_storage %} has-storage{% endif %}" data-order-label>
-      <div class="card-title">
-        <div>
+      <div class="card-products">
+        <ul class="products">
+          {% for product in order.data.products[:3] %}
+          <li><span class="product-summary">{% include "product_cover.html" %}<span>{{ product.name or product.offer_id or 'Товар' }}{% include "product_storage.html" %}</span></span><strong>× {{ product.quantity }}</strong></li>
+          {% endfor %}
+          {% if order.data.products|length > 3 %}<li>Ещё {{ order.data.products|length - 3 }}</li>{% endif %}
+        </ul>
+        <span class="tag">{{ cabinet_names[order.account_key] }}</span>
+      </div>
+      <div class="card-footer">
+        <div class="card-numbers">
           <a href="/orders/{{ order.account_key }}/{{ order.posting_number }}?{{ orders_query(account, hide_printed, hide_waiting) }}">{{ order.posting_number }}</a>
           <div class="label-number" data-label-number{% if not number %} hidden{% endif %}>{% if number %}№ этикетки {{ number }}{% endif %}</div>
         </div>
-        <span class="tag">{{ cabinet_names[order.account_key] }}</span>
+        <div class="card-controls">
+          {% set waiting_badge %}{% if waiting %}<span class="tag offline">В ожидании · {{ order_status_labels[order.status] }}</span>{% endif %}{% endset %}
+          {% if order.status == 'awaiting_packaging' and order.account_key in ('1', '2') %}
+          <div class="assembly-actions">
+            {{ waiting_badge }}
+            {% if order.account_key in ozon_assembly_accounts %}
+            <form action="/orders/{{ order.account_key }}/{{ order.posting_number }}/assembly?{{ orders_query(account, hide_printed, hide_waiting) }}" method="post">
+              <button class="button secondary" type="submit">Собрать</button>
+            </form>
+            {% if order.account_key in ozon_print_accounts %}
+            <form action="/orders/{{ order.account_key }}/{{ order.posting_number }}/assembly?{{ orders_query(account, hide_printed, hide_waiting) }}" method="post">
+              <input type="hidden" name="print_after" value="true">
+              <button class="button" type="submit">Собрать и напечатать</button>
+            </form>
+            {% else %}<span class="muted">Для печати запустите агент на Mac с настроенным принтером.</span>{% endif %}
+            {% else %}<span class="muted">Агент Ozon с правом сборки не в сети.</span>{% endif %}
+            {{ waiting_control(order, waiting, return_account=account, hide_printed=hide_printed, hide_waiting=hide_waiting) }}
+          </div>
+          {% elif order.status == 'wb_new' %}
+          {% include "wb_assembly_actions.html" %}
+          {% elif waiting %}
+          <div class="assembly-actions">
+            {{ waiting_badge }}
+            {{ waiting_control(order, waiting, return_account=account, hide_printed=hide_printed, hide_waiting=hide_waiting) }}
+          </div>
+          {% else %}
+          {% if order.status in label_statuses %}
+          {{ label_controls(order, printed, label_job_id, return_account=account, hide_printed=hide_printed, hide_waiting=hide_waiting) }}
+          {% endif %}
+          {{ waiting_control(order, waiting, return_account=account, hide_printed=hide_printed, hide_waiting=hide_waiting) }}
+          {% endif %}
+        </div>
       </div>
-      <ul class="products">
-        {% for product in order.data.products[:3] %}
-        <li><span class="product-summary">{% include "product_cover.html" %}<span>{{ product.name or product.offer_id or 'Товар' }}{% include "product_storage.html" %}</span></span><strong>× {{ product.quantity }}</strong></li>
-        {% endfor %}
-        {% if order.data.products|length > 3 %}<li>Ещё {{ order.data.products|length - 3 }}</li>{% endif %}
-      </ul>
-      {% set waiting_badge %}{% if waiting %}<span class="tag offline">В ожидании · {{ order_status_labels[order.status] }}</span>{% endif %}{% endset %}
-      {% if order.status == 'awaiting_packaging' and order.account_key in ('1', '2') %}
-      <div class="assembly-actions">
-        {{ waiting_badge }}
-        {% if order.account_key in ozon_assembly_accounts %}
-        <form action="/orders/{{ order.account_key }}/{{ order.posting_number }}/assembly?{{ orders_query(account, hide_printed, hide_waiting) }}" method="post">
-          <button class="button secondary" type="submit">Собрать</button>
-        </form>
-        {% if order.account_key in ozon_print_accounts %}
-        <form action="/orders/{{ order.account_key }}/{{ order.posting_number }}/assembly?{{ orders_query(account, hide_printed, hide_waiting) }}" method="post">
-          <input type="hidden" name="print_after" value="true">
-          <button class="button" type="submit">Собрать и напечатать</button>
-        </form>
-        {% else %}<span class="muted">Для печати запустите агент на Mac с настроенным принтером.</span>{% endif %}
-        {% else %}<span class="muted">Агент Ozon с правом сборки не в сети.</span>{% endif %}
-        {{ waiting_control(order, waiting, return_account=account, hide_printed=hide_printed, hide_waiting=hide_waiting) }}
-      </div>
-      {% elif order.status == 'wb_new' %}
-      {% include "wb_assembly_actions.html" %}
-      {% elif waiting %}
-      <div class="assembly-actions">
-        {{ waiting_badge }}
-        {{ waiting_control(order, waiting, return_account=account, hide_printed=hide_printed, hide_waiting=hide_waiting) }}
-      </div>
-      {% else %}
-      {% if order.status in label_statuses %}
-      {{ label_controls(order, printed, label_job_id, return_account=account, hide_printed=hide_printed, hide_waiting=hide_waiting) }}
-      {% endif %}
-      {{ waiting_control(order, waiting, return_account=account, hide_printed=hide_printed, hide_waiting=hide_waiting) }}
-      {% endif %}
     </article>
 {% endmacro %}
 <div class="heading">

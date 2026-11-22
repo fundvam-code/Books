@@ -37,10 +37,22 @@ h2 { font-size: 1.1rem; margin: 0 0 1rem; }
 .card, .panel { border-radius: .65rem; border: 1px solid var(--line); background: var(--paper); padding: 1rem; margin-bottom: .75rem; }
 .card.has-storage { border-color: #c8dfd2; box-shadow: inset 3px 0 #83b99a; }
 .card:last-child { margin-bottom: 0; }
-.card-title { display: flex; justify-content: space-between; flex-wrap: wrap; gap: .4rem; font-weight: 700; overflow-wrap: anywhere; }
+.card { padding-block: .5rem; margin-bottom: .375rem; }
+.card-products { display: flex; align-items: start; gap: .4rem; }
+.card-products > .tag { max-width: 40%; }
+.card-footer { display: flex; flex-wrap: wrap; align-items: center; gap: .25rem .6rem; margin-top: .3rem; }
+.card-numbers { font-size: .85rem; overflow-wrap: anywhere; }
+.card-controls { flex: 1 1 14rem; min-width: 0; }
+.card-controls .assembly-actions { margin-top: 0; }
+.card-controls .label-status, .card-controls .label-option { margin-bottom: .25rem; }
+.card-controls .waiting-action { margin-top: .25rem; }
+.card-controls .assembly-actions > .waiting-action { margin-top: 0; }
 .due, .empty { color: var(--muted); font-size: .9rem; }
 .products { padding: 0; list-style: none; font-size: .92rem; }
 .products li { display: flex; justify-content: space-between; gap: .5rem; border-top: 1px solid #e8eef6; padding: .35rem 0; overflow-wrap: anywhere; }
+.card-products .products { flex: 1; min-width: 0; margin: 0; }
+.card-products .products li { padding-block: .175rem; }
+.card-products .products li:first-child { border-top: 0; }
 .products strong { white-space: nowrap; }
 .product-summary { display: flex; align-items: center; gap: .5rem; min-width: 0; }
 .book-cover-wrap { position: relative; display: inline-flex; flex: 0 0 auto; align-items: center; }
