@@ -1,0 +1,6 @@
+<div class="assembly-actions">
+  <a class="button secondary" href="/orders/w/{{ order.posting_number }}/assembly">Перенести на сборку</a>
+  <form action="/orders/w/{{ order.posting_number }}/assembly" method="post">
+    <button class="button" type="submit" name="print_after" value="true">Собрать и напечатать</button>
+  </form>
+</div>

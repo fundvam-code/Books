@@ -46,7 +46,7 @@
       {% elif order.status in label_statuses %}
       {{ label_controls(order, printed, label_job_id, return_account=account, hide_printed=hide_printed, hide_waiting=hide_waiting) }}
       {% elif order.status == 'wb_new' %}
-      <a class="button secondary" href="/orders/w/{{ order.posting_number }}/assembly">Перенести на сборку</a>
+      {% include "wb_assembly_actions.html" %}
       {% endif %}
       {{ waiting_control(order, waiting, return_account=account, hide_printed=hide_printed, hide_waiting=hide_waiting) }}
     </article>

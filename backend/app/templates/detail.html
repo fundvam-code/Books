@@ -32,7 +32,7 @@
   {% include "label_print_option.html" %}
   {{ label_controls(order, printed, label_job_id) }}
   {% elif order.status == 'wb_new' %}
-  <a class="button secondary" href="/orders/w/{{ order.posting_number }}/assembly">Перенести на сборку</a>
+  {% include "wb_assembly_actions.html" %}
   {% endif %}
   {{ waiting_control(order, waiting) }}
 </section>

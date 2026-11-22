@@ -3,7 +3,7 @@ from contextlib import contextmanager
 from datetime import datetime
 from uuid import UUID
 
-from sqlalchemy import BigInteger, DateTime, ForeignKey, Index, String, Text, URL, create_engine, text
+from sqlalchemy import BigInteger, DateTime, ForeignKey, Index, String, Text, URL, create_engine, false, text
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, sessionmaker
 
@@ -136,6 +136,8 @@ class WbAssembly(Base):
     job_id: Mapped[UUID] = mapped_column(ForeignKey("jobs.id", ondelete="CASCADE"), primary_key=True)
     supply_id: Mapped[str | None] = mapped_column(String(80))
     started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    print_after: Mapped[bool] = mapped_column(server_default=false())
+    print_task_id: Mapped[UUID | None] = mapped_column(ForeignKey("print_tasks.id", ondelete="SET NULL"))
 
 
 class OzonAssembly(Base):

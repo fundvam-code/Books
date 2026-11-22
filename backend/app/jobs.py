@@ -54,6 +54,13 @@ def initialize():
         columns = inspect(connection).get_columns(WbAssembly.__tablename__)
         if any(column["name"] == "supply_id" and not column["nullable"] for column in columns):
             connection.execute(text("ALTER TABLE wb_assembly ALTER COLUMN supply_id DROP NOT NULL"))
+        names = {column["name"] for column in columns}
+        if "print_after" not in names:
+            connection.execute(text("ALTER TABLE wb_assembly ADD COLUMN print_after BOOLEAN NOT NULL DEFAULT FALSE"))
+        if "print_task_id" not in names:
+            connection.execute(text(
+                "ALTER TABLE wb_assembly ADD COLUMN print_task_id UUID REFERENCES print_tasks(id) ON DELETE SET NULL"
+            ))
         connection.execute(insert(Shift).values(id=1, revision=uuid4()).on_conflict_do_nothing())
         for key in OZON_ACCOUNTS:
             connection.execute(insert(Cabinet).values(key=key).on_conflict_do_nothing())

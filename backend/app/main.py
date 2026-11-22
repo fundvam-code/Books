@@ -254,6 +254,18 @@ def complete_job(job_id: UUID, body: Completion, auth: Agent, token: Lease):
         job = locked_job(db, job_id, token)
         if body.status == "succeeded":
             if job.kind == WB_ASSEMBLY_KIND and db.get(WbAssembly, job.id).started_at is not None:
+                action = db.get(WbAssembly, job.id)
+                if action.print_after:
+                    order = db.get(Order, (WB_ACCOUNT, job.posting_number), with_for_update=True)
+                    if order and (
+                        order.status == "wb_new" or
+                        (order.status == "wb_confirm" and order.data.get("supply_id") == action.supply_id)
+                    ):
+                        order.status = "wb_confirm"
+                        order.data = {**order.data, "status": "wb_confirm", "supply_id": action.supply_id}
+                        label_job_id, _ = get_or_enqueue_label(db, order)
+                        if label_job_id is not None:
+                            action.print_task_id = queue_print(db, WB_ACCOUNT, [batch_item(order, label_job_id, False)])
                 enqueue(db, "sync_orders", WB_ACCOUNT)
                 db.execute(update(Job).where(
                     Job.kind == "sync_orders", Job.account_key == WB_ACCOUNT, Job.state == "pending",
@@ -631,7 +643,8 @@ def wb_assembly_form(request: Request, posting_number: str):
 
 
 @app.post("/orders/w/{posting_number}/assembly")
-def request_wb_assembly(request: Request, posting_number: str):
+def request_wb_assembly(request: Request, posting_number: str,
+                        print_after: Annotated[bool, Form()] = False):
     if request.headers.get("origin") != "https://" + os.environ["PUBLIC_DOMAIN"]:
         raise HTTPException(403, "Откройте форму перевода на сборку в дашборде")
     with write_transaction() as db:
@@ -644,7 +657,7 @@ def request_wb_assembly(request: Request, posting_number: str):
             raise HTTPException(409, "Агент с настроенным WB_WRITE_TOKEN сейчас недоступен")
         job_id = enqueue(db, WB_ASSEMBLY_KIND, WB_ACCOUNT, posting_number)
         if job_id is not None:
-            db.add(WbAssembly(job_id=job_id))
+            db.add(WbAssembly(job_id=job_id, print_after=print_after))
         else:
             job_id = db.scalar(select(Job.id).where(
                 Job.kind == WB_ASSEMBLY_KIND, Job.account_key == WB_ACCOUNT,
@@ -652,6 +665,8 @@ def request_wb_assembly(request: Request, posting_number: str):
             ))
             if job_id is None:
                 raise HTTPException(409, "Перевод этого задания уже запрошен")
+            if db.get(WbAssembly, job_id).print_after != print_after:
+                raise HTTPException(409, "Для заказа уже выполняется другое действие")
     return RedirectResponse(f"/wb-assembly/{job_id}", status_code=303)
 
 
@@ -662,7 +677,14 @@ def wb_assembly_status(request: Request, job_id: UUID):
         action = db.get(WbAssembly, job_id) if job and job.kind == WB_ASSEMBLY_KIND else None
         if action is None:
             raise HTTPException(404, "Задание на перевод недоступно")
-    return templates.TemplateResponse(request, "wb_assembly_status.html", {"job": job, "action": action})
+        order = db.get(Order, (WB_ACCOUNT, job.posting_number))
+        task = db.get(PrintTask, action.print_task_id) if action.print_task_id else None
+        batch = db.get(LabelBatch, task.batch_id) if task else None
+        title = book_title(order) or (batch.labels[0].get("book_title") if batch and batch.labels else None)
+        _, pending, failures = batch_versions(db, batch, LABEL_DIR) if batch else (0, 0, [])
+    return templates.TemplateResponse(request, "wb_assembly_status.html", {
+        "job": job, "action": action, "task": task, "title": title, "pending": pending, "failures": failures,
+    })
 
 
 def shift_confirmation(request: Request, *, error=None, status_code=200):

@@ -1,14 +1,34 @@
 {% extends "base.html" %}
-{% block title %}Перенос на сборку WB{% endblock %}
+{% block title %}{{ 'Собрать и напечатать' if action.print_after else 'Перенос на сборку' }} — Wildberries{% endblock %}
 {% block head %}
-{% if job.state in ('pending', 'leased') %}<script src="/static/label.js" defer></script>{% endif %}
+{% if job.state in ('pending', 'leased') or (task and task.state in ('pending', 'leased', 'sending') and not failures) %}
+<script src="/static/label.js" defer></script>
+{% endif %}
 {% endblock %}
 {% block content %}
 <a class="back" href="/orders?account=w">← К заказам Wildberries</a>
-<div class="heading"><h1>Перенос на сборку</h1></div>
+<div class="heading"><h1>{{ 'Собрать и напечатать' if action.print_after else 'Перенос на сборку' }}</h1></div>
 <section class="panel" aria-live="polite">
-  <p>Задание № {{ job.posting_number }}{% if action.supply_id %} · Поставка {{ action.supply_id }}{% endif %}</p>
-  {% if job.state == 'done' %}
+  <dl class="details">
+    <div><dt>Номер отправления</dt><dd>{{ job.posting_number }}</dd></div>
+    <div><dt>Название книги</dt><dd>{{ title or '—' }}</dd></div>
+    {% if action.supply_id %}<div><dt>Поставка</dt><dd>{{ action.supply_id }}</dd></div>{% endif %}
+  </dl>
+  {% if job.state == 'done' and action.print_after %}
+    {% if not task %}
+    <p class="error" role="alert">Заказ перенесён в сборку. Задание печати недоступно.</p>
+    {% elif task.state == 'submitted' %}
+    <p>Стикер передан в очередь принтера.</p>
+    {% elif task.state == 'unknown' %}
+    <p class="error" role="alert">Агент не подтвердил печать. Проверьте очередь принтера перед повтором.</p>
+    {% elif task.state == 'failed' or failures %}
+    <p class="error" role="alert">{{ task.error or (failures[0][1] if failures else 'Не удалось напечатать стикер.') }}</p>
+    {% elif pending %}
+    <p>Заказ перенесён в сборку. Загружаем стикер.</p>
+    {% else %}
+    <p>Стикер готов. Ожидаем отправку на принтер.</p>
+    {% endif %}
+  {% elif job.state == 'done' %}
   <p>Wildberries подтвердил перенос. Задание появится в колонке «На сборке» после обновления списка.</p>
   {% elif job.state == 'failed' %}
   <p class="error" role="alert">{{ job.error }}</p>
