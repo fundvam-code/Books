@@ -2,6 +2,7 @@ import csv
 import os
 import re
 from collections import defaultdict
+from dataclasses import dataclass
 from io import StringIO
 from unicodedata import normalize
 
@@ -38,15 +39,16 @@ def parse_catalog(data):
     entries = []
     seen = set()
     for row in reader:
-        title = title_key(row.get("Название") or "")
+        catalog_title = " ".join((row.get("Название") or "").split())
+        title = title_key(catalog_title)
         place = " ".join((row.get("Место") or "").split())
         isbn = isbn_key(row.get("ISBN") or "")
         status = " ".join((row.get("Статус") or "").casefold().split())
-        entry = (title, isbn, place)
+        key = (title, isbn, place)
         if ((title or isbn) and place and place.casefold() not in UNKNOWN_PLACES
-                and status not in UNVERIFIED_STATUSES and entry not in seen):
-            entries.append(entry)
-            seen.add(entry)
+                and status not in UNVERIFIED_STATUSES and key not in seen):
+            entries.append((*key, catalog_title))
+            seen.add(key)
     return entries
 
 
@@ -81,23 +83,55 @@ def refresh_catalog():
     return "updated"
 
 
+@dataclass(frozen=True)
+class StorageMatch:
+    locations: tuple[str, ...]
+    catalog_title: str | None = None
+
+
+def matches_title_fragment(title, candidate):
+    shorter, longer = sorted((title, candidate), key=len)
+    return (f" {shorter} " in f" {longer} "
+            and sum(len(word) >= 3 and word.isalpha() for word in shorter.split()) >= 2)
+
+
 class StorageLookup:
     def __init__(self, entries):
         self.by_isbn = defaultdict(list)
         self.by_title = defaultdict(list)
-        for title, isbn, place in entries:
+        self.catalog_titles = {}
+        for title, isbn, place, *display_titles in entries:
             if title:
                 self.by_title[title].append((isbn, place))
+                self.catalog_titles.setdefault(title, display_titles[0] if display_titles else title)
             if isbn:
                 self.by_isbn[isbn].append(place)
 
-    def locations(self, product):
-        isbn = isbn_key(product.get("offer_id") or "") or isbn_key(product.get("sku") or "")
-        exact = self.by_isbn.get(isbn)
-        if exact:
-            return tuple(dict.fromkeys(exact))
-        matches = self.by_title.get(title_key(product.get("name") or ""), ())
+    def title_locations(self, title, isbn):
+        matches = self.by_title.get(title, ())
         known_isbns = {candidate for candidate, _ in matches if candidate}
         if known_isbns and ((isbn and isbn not in known_isbns) or len(known_isbns) > 1):
             return ()
         return tuple(dict.fromkeys(place for _, place in matches))
+
+    def match(self, product):
+        isbn = isbn_key(product.get("offer_id") or "") or isbn_key(product.get("sku") or "")
+        exact = self.by_isbn.get(isbn)
+        if exact:
+            return StorageMatch(tuple(dict.fromkeys(exact)))
+        title = title_key(product.get("name") or "")
+        if not title:
+            return None
+        if title in self.by_title:
+            locations = self.title_locations(title, isbn)
+            return StorageMatch(locations) if locations else None
+
+        possible = None
+        for candidate in self.by_title:
+            if matches_title_fragment(title, candidate):
+                locations = self.title_locations(candidate, isbn)
+                if locations:
+                    if possible:
+                        return None
+                    possible = StorageMatch(locations, self.catalog_titles[candidate])
+        return possible

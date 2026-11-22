@@ -1,2 +1,7 @@
-{% set locations = storage_locations(product) %}
-{% if locations %}<small class="storage-location">Место хранения · {{ locations|join(' · ') }}</small>{% endif %}
+{% set match = storage_match(product) %}
+{% if match %}
+<small class="storage-location">
+  {% if match.catalog_title %}<span class="storage-location-hint">Возможное совпадение · {{ match.catalog_title }}</span>{% endif %}
+  Место хранения · {{ match.locations|join(' · ') }}
+</small>
+{% endif %}

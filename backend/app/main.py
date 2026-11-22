@@ -412,7 +412,7 @@ def orders(request: Request, account: str = "all", hide_printed: bool = False, s
         ],
         "hide_printed": hide_printed,
         "hide_waiting": hide_waiting,
-        "storage_locations": StorageLookup(catalog.entries if catalog else []).locations,
+        "storage_match": StorageLookup(catalog.entries if catalog else []).match,
         "storage_updated_at": catalog.updated_at if catalog else None,
         "storage_refresh": storage_refresh,
         "waiting_orders": waiting_orders,
@@ -445,7 +445,7 @@ def detail(request: Request, account_key: Account, posting_number: str):
         "order": order, "data": order.data, "status_label": labels[order.status],
         "printed": printed, "label_job_id": job_id if pdf_is_available(job_id) else None,
         "waiting": waiting and order.status in LABEL_STATUSES,
-        "storage_locations": StorageLookup(catalog.entries if catalog else []).locations,
+        "storage_match": StorageLookup(catalog.entries if catalog else []).match,
     })
 
 
