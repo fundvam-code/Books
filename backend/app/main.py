@@ -562,8 +562,13 @@ def detail(request: Request, account_key: Account, posting_number: str, account:
     })
 
 
+def dashboard_origin():
+    port = int(os.environ.get("DASHBOARD_HTTPS_PORT", "443"))
+    return "https://" + os.environ["PUBLIC_DOMAIN"] + (f":{port}" if port != 443 else "")
+
+
 def require_dashboard_origin(request: Request):
-    if request.headers.get("origin") != "https://" + os.environ["PUBLIC_DOMAIN"]:
+    if request.headers.get("origin") != dashboard_origin():
         raise HTTPException(403, "Откройте форму печати в дашборде")
 
 
@@ -571,7 +576,7 @@ def require_dashboard_origin(request: Request):
 def refresh_book_storage(request: Request, account: Annotated[AccountFilter, Form()] = "all",
                          hide_printed: Annotated[bool, Form()] = False,
                          hide_waiting: Annotated[bool, Form()] = True):
-    if request.headers.get("origin") != "https://" + os.environ["PUBLIC_DOMAIN"]:
+    if request.headers.get("origin") != dashboard_origin():
         raise HTTPException(403, "Откройте дашборд для обновления мест хранения")
     try:
         result = refresh_catalog()
@@ -632,7 +637,7 @@ def wb_assembly_form(request: Request, posting_number: str, account: AccountFilt
 def request_wb_assembly(request: Request, posting_number: str,
                         print_after: Annotated[bool, Form()] = False, account: AccountFilter = WB_ACCOUNT,
                         hide_printed: bool = False, hide_waiting: bool = True):
-    if request.headers.get("origin") != "https://" + os.environ["PUBLIC_DOMAIN"]:
+    if request.headers.get("origin") != dashboard_origin():
         raise HTTPException(403, "Откройте форму перевода на сборку в дашборде")
     with write_transaction() as db:
         order = db.get(Order, (WB_ACCOUNT, posting_number), with_for_update=True)
@@ -722,7 +727,7 @@ def shift_form(request: Request):
 
 @app.post("/shift/start")
 def confirm_shift(request: Request, revision: Annotated[UUID, Form()]):
-    if request.headers.get("origin") != "https://" + os.environ["PUBLIC_DOMAIN"]:
+    if request.headers.get("origin") != dashboard_origin():
         raise HTTPException(403, "Откройте подтверждение начала смены в дашборде")
     try:
         new_revision = start_shift(revision)
