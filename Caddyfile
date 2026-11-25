@@ -1,6 +1,9 @@
 {
     default_sni {$PUBLIC_DOMAIN}
     auto_https disable_redirects
+    servers {
+        protocols h1 h2
+    }
 }
 
 (dashboard_tls_default) {
