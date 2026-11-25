@@ -20,6 +20,7 @@ services:
     environment:
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Укажите пароль PostgreSQL}
       PUBLIC_DOMAIN: ${PUBLIC_DOMAIN:?Укажите домен}
+      DASHBOARD_HTTPS_PORT: ${DASHBOARD_HTTPS_PORT:-8443}
       AGENT_SHARED_SECRET: ${AGENT_SHARED_SECRET:?Укажите секрет агента}
       LABEL_DIR: /labels
       BOOK_STORAGE_SHEET_ID: ${BOOK_STORAGE_SHEET_ID:-}
@@ -40,12 +41,13 @@ services:
     image: caddy:2-alpine
     environment:
       PUBLIC_DOMAIN: ${PUBLIC_DOMAIN:?Укажите домен}
+      DASHBOARD_HTTPS_PORT: ${DASHBOARD_HTTPS_PORT:-8443}
       DASHBOARD_TLS_MODE: ${DASHBOARD_TLS_MODE:-default}
       DASHBOARD_USERNAME: ${DASHBOARD_USERNAME:?Укажите имя пользователя}
       DASHBOARD_PASSWORD_HASH: ${DASHBOARD_PASSWORD_HASH:?Укажите хеш пароля}
     ports:
-      - "80:80"
-      - "443:443"
+      - "${DASHBOARD_HTTP_PORT:-8080}:80"
+      - "${DASHBOARD_HTTPS_PORT:-8443}:443"
     volumes:
       - ./Caddyfile:/etc/caddy/Caddyfile:ro
       - caddy_data:/data
