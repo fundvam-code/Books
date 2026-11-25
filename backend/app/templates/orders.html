@@ -1,54 +1,155 @@
 {% extends "base.html" %}
+{% from "label_controls.html" import label_controls, waiting_control %}
+{% block title %}{{ active_tab_title }} ({{ active_tab_count|join(' / ') }}) — Заказы FBS{% endblock %}
+{% block head %}
+<script src="/static/orders.js?v=3" defer></script>
+<script src="/static/label-load.js" defer></script>
+<script src="/static/label-window.js" defer></script>
+{% endblock %}
 {% block content %}
+{% macro order_card(order, printed, label_job_id, waiting) %}
+    {% set number = label_number(label_job_id, order.account_key) %}
+    {% set ns = namespace(has_storage=false) %}
+    {% for product in order.data.products %}
+      {% if storage_match(product) %}{% set ns.has_storage = true %}{% endif %}
+    {% endfor %}
+    <article class="card{% if ns.has_storage %} has-storage{% endif %}" data-order-label>
+      <div class="card-products">
+        <ul class="products">
+          {% for product in order.data.products[:3] %}
+          <li><span class="product-summary">{% include "product_cover.html" %}<span>{{ product.name or product.offer_id or 'Товар' }}{% include "product_storage.html" %}</span></span><strong>× {{ product.quantity }}</strong></li>
+          {% endfor %}
+          {% if order.data.products|length > 3 %}<li>Ещё {{ order.data.products|length - 3 }}</li>{% endif %}
+        </ul>
+        <span class="tag">{{ cabinet_names[order.account_key] }}</span>
+      </div>
+      <div class="card-footer">
+        <div class="card-numbers">
+          <a href="/orders/{{ order.account_key }}/{{ order.posting_number }}?{{ orders_query(account, hide_printed, hide_waiting) }}">{{ order.posting_number }}</a>
+          <div class="label-number" data-label-number{% if not number %} hidden{% endif %}>{% if number %}№ этикетки {{ number }}{% endif %}</div>
+        </div>
+        <div class="card-controls">
+          {% set waiting_badge %}{% if waiting %}<span class="tag offline">В ожидании · {{ order_status_labels[order.status] }}</span>{% endif %}{% endset %}
+          {% if order.status == 'awaiting_packaging' and order.account_key in ('1', '2') %}
+          <div class="assembly-actions">
+            {{ waiting_badge }}
+            {% if order.account_key in ozon_assembly_accounts %}
+            <form action="/orders/{{ order.account_key }}/{{ order.posting_number }}/assembly?{{ orders_query(account, hide_printed, hide_waiting) }}" method="post">
+              <button class="button secondary" type="submit">Собрать</button>
+            </form>
+            {% if order.account_key in ozon_print_accounts %}
+            <form action="/orders/{{ order.account_key }}/{{ order.posting_number }}/assembly?{{ orders_query(account, hide_printed, hide_waiting) }}" method="post">
+              <input type="hidden" name="print_after" value="true">
+              <button class="button" type="submit">Собрать и напечатать</button>
+            </form>
+            {% else %}<span class="muted">Для печати запустите агент на Mac с настроенным принтером.</span>{% endif %}
+            {% else %}<span class="muted">Агент Ozon с правом сборки не в сети.</span>{% endif %}
+            {{ waiting_control(order, waiting, return_account=account, hide_printed=hide_printed, hide_waiting=hide_waiting) }}
+          </div>
+          {% elif order.status == 'wb_new' %}
+          {% include "wb_assembly_actions.html" %}
+          {% elif waiting %}
+          <div class="assembly-actions">
+            {{ waiting_badge }}
+            {% include "waiting_print.html" %}
+            {{ waiting_control(order, waiting, return_account=account, hide_printed=hide_printed, hide_waiting=hide_waiting) }}
+          </div>
+          {% else %}
+          {% if order.status in label_statuses %}
+          {{ label_controls(order, printed, label_job_id, return_account=account, hide_printed=hide_printed, hide_waiting=hide_waiting) }}
+          {% endif %}
+          {{ waiting_control(order, waiting, return_account=account, hide_printed=hide_printed, hide_waiting=hide_waiting) }}
+          {% endif %}
+        </div>
+      </div>
+    </article>
+{% endmacro %}
 <div class="heading">
   <h1>Активные отправления</h1>
   <span class="connection {{ 'online' if online else 'offline' }}">Агент {{ 'в сети' if online else 'не в сети' }}</span>
 </div>
-<nav class="tabs" aria-label="Кабинеты Ozon">
-  {% for key, title in [('all', 'Все кабинеты'), ('1', 'Кабинет 1'), ('2', 'Кабинет 2')] %}
-  <a href="/orders?account={{ key }}"{% if key == account %} aria-current="page"{% endif %}>{{ title }}</a>
+<nav class="tabs" aria-label="Кабинеты">
+  {% for key, title, count in tabs %}
+  <a href="{{ orders_url(key, hide_printed, hide_waiting) }}"{% if key == account %} aria-current="page"{% endif %}>{{ title }} (<span data-stage-count="{{ key }}" title="Ожидают сборки / ждут отгрузки без отметки о печати">{{ count|join(' / ') }}</span>)</a>
   {% endfor %}
 </nav>
 <section class="sync" aria-label="Синхронизация">
   {% for cabinet in cabinets %}
   <div>
-    <strong>Кабинет {{ cabinet.key }}</strong>
-    {% if cabinet.updated_at %}<span>Обновлён {{ cabinet.updated_at.strftime('%d.%m.%Y %H:%M') }} UTC</span>
+    <strong>{{ cabinet_names[cabinet.key] }}</strong>
+    {% if cabinet.updated_at %}<span>Обновлён {{ cabinet.updated_at|msk }}</span>
     {% else %}<span>Ожидаем первую загрузку</span>{% endif %}
     {% if cabinet.error %}<span class="error">{{ cabinet.error }}</span>{% endif %}
   </div>
   {% endfor %}
-  <a class="button secondary" href="/orders?account={{ account }}">Обновить экран</a>
+  <a class="button secondary" href="{{ orders_url(account, hide_printed, hide_waiting) }}">Обновить экран</a>
 </section>
+{% if recent_shift %}
+<p role="status"{% if shift_loading %} data-shift-loading{% endif %}>Смена начата.{% if shift_loading %} Загружаем отправления.{% endif %}</p>
+{% endif %}
+<div class="orders-filter">
+  <form action="/orders" method="get">
+    <input type="hidden" name="account" value="{{ account }}">
+    <label><input id="hide-printed" type="checkbox" name="hide_printed" value="true"{% if hide_printed %} checked{% endif %}> Скрывать напечатанные</label>
+    <input type="hidden" name="hide_waiting" value="false">
+    <label><input id="hide-waiting" type="checkbox" name="hide_waiting" value="true"{% if hide_waiting %} checked{% endif %}> Скрывать ожидающие</label>
+    <noscript><button class="button secondary" type="submit">Применить</button></noscript>
+  </form>
+  {% if has_printable %}{% include "label_print_option.html" %}{% endif %}
+</div>
+{% if has_printable %}
+    {% macro batch_button(target, text) %}
+      <form class="batch-label-form label-output" action="/label-batches" method="post" target="_blank" rel="noopener">
+        <input type="hidden" name="account" value="{{ target }}">
+        <input type="hidden" name="autoprint" value="true" disabled>
+        {% if hide_printed %}<input type="hidden" name="hide_printed" value="true">{% endif %}
+        {% if not hide_waiting %}<input type="hidden" name="show_waiting" value="true">{% endif %}
+        <label class="label-option"><input type="checkbox" name="with_title" value="true"> Печатать названия книг на этикетках</label>
+        <button class="button" type="submit">{{ text }}</button>
+      </form>
+    {% endmacro %}
+    {% if account == 'all' %}
+      {% if '1' in printable_accounts or '2' in printable_accounts %}{{ batch_button('oz', 'Печатать все этикетки Ozon') }}{% endif %}
+      {% if 'w' in printable_accounts %}{{ batch_button('w', 'Печатать все этикетки Wildberries') }}{% endif %}
+    {% else %}
+      {{ batch_button(account, 'Печатать все этикетки ' ~ cabinet_names[account]) }}
+    {% endif %}
+{% endif %}
+{% for marketplace, columns in boards %}
+{% if boards|length > 1 %}<h2>{{ marketplace }}</h2>{% endif %}
 <div class="board">
   {% for title, orders in columns %}
   <section class="lane">
     <h2>{{ title }} <span class="count">{{ orders|length }}</span></h2>
-    {% for order in orders %}
-    <article class="card">
-      <div class="card-title">
-        <a href="/orders/{{ order.account_key }}/{{ order.posting_number }}">{{ order.posting_number }}</a>
-        <span class="tag">Кабинет {{ order.account_key }}</span>
-      </div>
-      {% if order.data.shipment_date %}
-      <p class="due">Отгрузка {{ order.data.shipment_date[:16]|replace('T', ' ') }} UTC</p>
-      {% endif %}
-      <ul class="products">
-        {% for product in order.data.products[:3] %}
-        <li><span>{{ product.name or product.offer_id or 'Товар' }}</span><strong>× {{ product.quantity }}</strong></li>
-        {% endfor %}
-        {% if order.data.products|length > 3 %}<li>Ещё {{ order.data.products|length - 3 }}</li>{% endif %}
-      </ul>
-      {% if order.status == 'awaiting_deliver' %}
-      <form action="/orders/{{ order.account_key }}/{{ order.posting_number }}/label" method="post">
-        <button class="button secondary" type="submit">Печать этикетки</button>
-      </form>
-      {% endif %}
-    </article>
+    {% for order, printed, label_job_id, waiting in orders %}
+    {{ order_card(order, printed, label_job_id, waiting) }}
     {% else %}
     <p class="empty">Здесь пока нет отправлений.</p>
     {% endfor %}
   </section>
   {% endfor %}
 </div>
+{% endfor %}
+<section class="lane waiting-list" id="waiting">
+  <h2>В ожидании <span class="count">{{ waiting_orders|length }}</span></h2>
+  {% for order, printed, label_job_id, waiting in waiting_orders %}
+    {{ order_card(order, printed, label_job_id, waiting) }}
+  {% else %}
+  <p class="empty">Нет отправлений в ожидании.</p>
+  {% endfor %}
+</section>
+<footer class="orders-footer" id="book-storage">
+  <a href="/print-log?{{ orders_query(account, hide_printed, hide_waiting) }}">Журнал печати</a>
+  <a class="button secondary" href="/shift/start">Начало смены</a>
+  <form action="/book-storage/refresh" method="post">
+    <input type="hidden" name="account" value="{{ account }}">
+    {% if hide_printed %}<input type="hidden" name="hide_printed" value="true">{% endif %}
+    {% if not hide_waiting %}<input type="hidden" name="hide_waiting" value="false">{% endif %}
+    <button class="button secondary" type="submit">Обновить места хранения</button>
+  </form>
+  {% if storage_updated_at %}<small class="muted">Каталог обновлён {{ storage_updated_at|msk }}</small>{% endif %}
+</footer>
+{% if storage_refresh == 'updated' %}<p role="status">Места хранения обновлены.</p>
+{% elif storage_refresh == 'failed' %}<p class="error" role="alert">Не удалось обновить места хранения. Показаны данные последней успешной загрузки.</p>
+{% elif storage_refresh == 'unconfigured' %}<p class="error" role="alert">Для мест хранения не настроена таблица Google Sheets.</p>{% endif %}
 {% endblock %}

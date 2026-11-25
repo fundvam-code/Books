@@ -4,7 +4,11 @@ services:
       context: .
       dockerfile: agent/Dockerfile
     env_file:
-      - path: ${OZON_ENV_FILE:?Укажите путь к файлу Ozon}
+      - path: ${OZON_ENV_FILE:-.env.ozon}
+        required: false
+        format: raw
+      - path: .env.wb
+        required: false
         format: raw
     environment:
       DASHBOARD_URL: ${DASHBOARD_URL:?Укажите адрес дашборда}

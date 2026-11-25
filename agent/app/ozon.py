@@ -1,18 +1,13 @@
-from dataclasses import dataclass
+import asyncio
 from datetime import UTC, datetime, timedelta
 
 import httpx
 
+from .errors import MarketplaceError as OzonError
+
 ORIGIN = "https://api-seller.ozon.ru"
 ACTIVE = ("awaiting_packaging", "awaiting_deliver")
 PDF_LIMIT = 8 * 1024 * 1024
-
-
-@dataclass
-class OzonError(Exception):
-    code: str
-    retry: bool = False
-    retry_after: int | None = None
 
 
 class Ozon:
@@ -81,7 +76,51 @@ class Ozon:
             })
             if posting["status"] in ACTIVE:
                 orders[number] = normalize(key, posting)
-        return {"orders": list(orders.values()), "covered_since": start.isoformat()}
+        product_info_status = None
+        offer_ids = sorted({product["offer_id"] for order in orders.values() for product in order["products"]
+                            if product["offer_id"]})
+        metadata = {}
+        offers_by_product_id = {}
+        try:
+            for offset in range(0, len(offer_ids), 1000):
+                reply = await self.post("/v3/product/info/list", {"offer_id": offer_ids[offset:offset + 1000]})
+                items = reply.get("items")
+                if not isinstance(items, list):
+                    raise OzonError("response", True)
+                for item in items:
+                    if isinstance(item, dict) and isinstance(item.get("offer_id"), str):
+                        product_id = value_text(item.get("id"))
+                        if product_id.isascii() and product_id.isdecimal() and int(product_id) > 0:
+                            offers_by_product_id[product_id] = item["offer_id"]
+                        image = first_image_url(item.get("primary_image")) or first_image_url(item.get("images"))
+                        metadata[item["offer_id"]] = {
+                            "image_url": image, "image_full_url": image,
+                            "listing_created_at": item.get("created_at") if isinstance(item.get("created_at"), str) else None,
+                        }
+        except (OzonError, KeyError, TypeError, ValueError) as error:
+            product_info_status = "denied" if getattr(error, "code", None) == "access" else "unavailable"
+        try:
+            product_ids = list(offers_by_product_id)
+            for offset in range(0, len(product_ids), 1000):
+                reply = await self.post("/v2/product/pictures/info", {"product_id": product_ids[offset:offset + 1000]})
+                items = reply.get("items")
+                if not isinstance(items, list):
+                    break
+                for item in items:
+                    if not isinstance(item, dict):
+                        continue
+                    offer_id = offers_by_product_id.get(value_text(item.get("product_id")))
+                    primary = first_image_url(item.get("primary_photo"))
+                    if offer_id is not None and primary:
+                        metadata[offer_id].update(image_url=primary, image_full_url=primary)
+        except (OzonError, ValueError):
+            # Keep the product data available when the separate photo lookup fails.
+            pass
+        for order in orders.values():
+            for product in order["products"]:
+                product.update(metadata.get(product["offer_id"], {}))
+        return {"orders": list(orders.values()), "covered_since": start.isoformat(),
+                "product_info_status": product_info_status}
 
     async def create_label(self, number):
         reply = await self.post("/v3/posting/fbs/package-label/create", {"posting_numbers": [number]}, label=True)
@@ -93,13 +132,55 @@ class Ozon:
             raise OzonError("label", True)
         return int(preferred["task_id"])
 
+    async def assemble(self, number, products):
+        posting = await self.post("/v3/posting/fbs/get", {"posting_number": number})
+        status = posting.get("status")
+        if status == "awaiting_deliver":
+            return status
+        if status != "awaiting_packaging":
+            raise OzonError("ozon_assembly_conflict")
+        package_products = []
+        for product in products:
+            try:
+                sku = int(product["sku"])
+                quantity = int(product["quantity"])
+            except (KeyError, TypeError, ValueError) as error:
+                raise OzonError("response") from error
+            if sku <= 0 or quantity <= 0:
+                raise OzonError("response")
+            package_products.append({"product_id": sku, "quantity": quantity})
+        if not package_products:
+            raise OzonError("response")
+        await self.post("/v4/posting/fbs/ship", {
+            "posting_number": number,
+            "packages": [{"products": package_products}],
+            "with": {"additional_data": True},
+        })
+        for attempt in range(12):
+            if attempt:
+                await asyncio.sleep(5)
+            posting = await self.post("/v3/posting/fbs/get", {"posting_number": number})
+            status = posting.get("status")
+            if status == "awaiting_deliver":
+                return status
+            if status not in ("awaiting_packaging", "acceptance_in_progress"):
+                raise OzonError("ozon_assembly_conflict")
+        raise OzonError("ozon_assembly_unknown")
+
     async def get_label_url(self, task_id):
         reply = await self.post("/v2/posting/fbs/package-label/get", {"task_id": task_id}, label=True)
-        if reply["status"] in ("pending", "in_progress"):
+        status = reply.get("status")
+        details = status if isinstance(status, dict) else reply
+        code = details.get("code") if isinstance(status, dict) else status
+        if code in ("pending", "in_progress"):
             return None
-        if reply["status"] != "completed" or not reply.get("file_url"):
+        file_url = reply.get("file_url")
+        if (
+            code != "completed" or not isinstance(file_url, str) or not file_url
+            or details.get("unprinted_postings") or details.get("printed_postings_count") == 0
+        ):
             raise OzonError("label")
-        return reply["file_url"]
+        return file_url
 
     async def fetch_pdf(self, url):
         target = httpx.URL(url)
@@ -119,6 +200,11 @@ class Ozon:
         if not data.startswith(b"%PDF-") or b"%%EOF" not in data[-2048:]:
             raise OzonError("label")
         return bytes(data)
+
+
+def first_image_url(value):
+    urls = value if isinstance(value, list) else [value]
+    return next((url for url in urls if isinstance(url, str) and url.startswith("https://")), None)
 
 
 def value_text(value):
@@ -149,5 +235,8 @@ def normalize(key, row):
             "sku": value_text(product.get("sku")),
             "quantity": int(product["quantity"]),
             "price": format_price(product.get("price"), product.get("currency_code")),
+            "image_url": None,
+            "image_full_url": None,
+            "listing_created_at": None,
         } for product in row["products"]],
     }

@@ -1,0 +1,17 @@
+{% extends "base.html" %}
+{% block title %}Перенос на сборку WB{% endblock %}
+{% block content %}
+<a class="back" href="/orders/w/{{ order.posting_number }}">← К отправлению</a>
+<div class="heading"><h1>Перенести на сборку</h1></div>
+<section class="panel">
+  <p>Задание Wildberries № {{ order.posting_number }}{% if book_title(order) %} · {{ book_title(order) }}{% endif %}</p>
+  {% if enabled %}
+  <p>Агент сам найдёт открытую поставку Wildberries.</p>
+  <form action="/orders/w/{{ order.posting_number }}/assembly?{{ return_query }}" method="post">
+    <button class="button" type="submit">Подтвердить перенос</button>
+  </form>
+  {% else %}
+  <p>Для переноса подключите обновлённый агент с токеном WB_WRITE_TOKEN категории «Маркетплейс» и доступом «Чтение и запись».</p>
+  {% endif %}
+</section>
+{% endblock %}

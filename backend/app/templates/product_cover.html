@@ -1,0 +1,6 @@
+{% if product.image_url %}
+<span class="book-cover-wrap" aria-label="Обложка книги">
+  <img class="book-cover-thumb" src="{{ product.image_url }}" alt="" loading="lazy">
+  <img class="book-cover-zoom" src="{{ product.image_url }}" alt="" loading="lazy">
+</span>
+{% endif %}

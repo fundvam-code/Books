@@ -35,14 +35,70 @@ h2 { font-size: 1.1rem; margin: 0 0 1rem; }
 .lane { background: #eaf0f8; border: 1px solid var(--line); border-radius: .85rem; padding: 1rem; }
 .lane h2 { display: flex; gap: .55rem; align-items: center; }
 .card, .panel { border-radius: .65rem; border: 1px solid var(--line); background: var(--paper); padding: 1rem; margin-bottom: .75rem; }
+.card.has-storage { border-color: #c8dfd2; box-shadow: inset 3px 0 #83b99a; }
 .card:last-child { margin-bottom: 0; }
-.card-title { display: flex; justify-content: space-between; flex-wrap: wrap; gap: .4rem; font-weight: 700; overflow-wrap: anywhere; }
+.card { padding-block: .5rem; margin-bottom: .375rem; }
+.card-products { display: flex; align-items: start; gap: .4rem; }
+.card-products > .tag { max-width: 40%; }
+.card-footer { display: flex; flex-wrap: wrap; align-items: center; gap: .25rem .6rem; margin-top: .3rem; }
+.card-numbers { font-size: .85rem; overflow-wrap: anywhere; }
+.card-controls { flex: 1 1 14rem; min-width: 0; }
+.card-controls .assembly-actions { margin-top: 0; }
+.card-controls .label-status, .card-controls .label-option { margin-bottom: .25rem; }
+.card-controls .waiting-action { margin-top: .25rem; }
+.card-controls .assembly-actions > .waiting-action { margin-top: 0; }
 .due, .empty { color: var(--muted); font-size: .9rem; }
 .products { padding: 0; list-style: none; font-size: .92rem; }
 .products li { display: flex; justify-content: space-between; gap: .5rem; border-top: 1px solid #e8eef6; padding: .35rem 0; overflow-wrap: anywhere; }
+.card-products .products { flex: 1; min-width: 0; margin: 0; }
+.card-products .products li { padding-block: .175rem; }
+.card-products .products li:first-child { border-top: 0; }
 .products strong { white-space: nowrap; }
+.product-summary { display: flex; align-items: center; gap: .5rem; min-width: 0; }
+.book-cover-wrap { position: relative; display: inline-flex; flex: 0 0 auto; align-items: center; }
+.book-cover-thumb { display: block; width: 2.35rem; height: 3.2rem; object-fit: contain; border-radius: .2rem; }
+.book-cover-zoom {
+  display: none;
+  position: fixed;
+  z-index: 10;
+  left: 50%;
+  top: 50%;
+  width: min(27rem, calc(100vw - 2rem));
+  max-height: min(39rem, calc(100vh - 2rem));
+  object-fit: contain;
+  transform: translate(-50%, -50%);
+  padding: .2rem;
+  border: 1px solid var(--line);
+  border-radius: .3rem;
+  background: white;
+  box-shadow: 0 5px 20px #14233b44;
+  pointer-events: none;
+}
+.book-cover-wrap:hover .book-cover-zoom { display: block; }
 .button { display: inline-block; font: inherit; font-size: .9rem; border: 1px solid var(--accent); border-radius: .45rem; padding: .4rem .75rem; color: #fff; background: var(--accent); text-decoration: none; cursor: pointer; }
 .button.secondary { color: #1a4b8d; border-color: #b5c8e2; background: #f1f6ff; }
+.label-status, .label-actions { display: flex; flex-wrap: wrap; gap: .4rem; }
+.label-status { margin-bottom: .5rem; }
+.label-number { color: var(--muted); font-weight: 400; font-size: .84rem; }
+.label-output button[hidden] { display: none; }
+.label-load button, a.label-link { border: 0; cursor: pointer; text-decoration: underline; text-underline-offset: .15em; }
+.label-load button:disabled { cursor: wait; text-decoration: none; }
+.label-load .error { font-size: .83rem; }
+.label-option { display: block; margin-bottom: .4rem; font-size: .9rem; }
+.batch-label-form { margin-bottom: 1rem; }
+.orders-filter { display: flex; flex-wrap: wrap; gap: .4rem 1.2rem; margin-bottom: 1rem; }
+.orders-footer { display: flex; flex-wrap: wrap; align-items: center; gap: 1rem; margin-top: 1.25rem; }
+.orders-footer small, .storage-location { color: var(--muted); }
+.storage-location { display: block; margin-top: .15rem; overflow-wrap: anywhere; }
+.storage-location-hint { display: block; color: #894116; font-weight: 600; }
+.waiting-action { margin-top: .5rem; }
+.assembly-actions { display: flex; align-items: center; gap: .4rem; margin-top: .6rem; }
+.assembly-actions > form { min-width: 0; }
+.assembly-actions > .waiting-action { margin-top: 0; }
+.assembly-actions .button { padding: .3rem .55rem; }
+.waiting-list { margin-top: 1rem; }
+.print-option { display: inline-block; margin-bottom: .4rem; }
+.orders-filter .print-option { margin-bottom: 0; }
 .details { display: grid; grid-template-columns: repeat(auto-fit, minmax(11rem, 1fr)); gap: .8rem; margin: 0 0 1rem; }
 dt { color: var(--muted); font-size: .85rem; }
 dd { margin: 0; overflow-wrap: anywhere; }

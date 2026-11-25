@@ -1,0 +1,39 @@
+{% extends "base.html" %}
+{% block title %}Печать всех этикеток{% endblock %}
+{% block head %}
+{% if pending %}<script src="/static/label.js" defer></script>{% endif %}
+{% endblock %}
+{% block content %}
+<a class="back" href="{{ orders_url(batch.account, hide_printed, not show_waiting) }}">← К отправлениям</a>
+<div class="heading"><h1>Печать всех этикеток</h1></div>
+<section class="panel" aria-live="polite">
+  {% if title_error %}
+    {% include "batch_title_error.html" %}
+  {% elif merge_error %}
+    {% if can_open_originals %}
+    <p>Не удалось добавить название на одну из этикеток.</p>
+    <a class="button" href="{{ originals_url }}">Открыть все этикетки без названий</a>
+    {% else %}
+    <p>Не удалось объединить PDF. Повторите запрос из списка отправлений.</p>
+    {% endif %}
+  {% else %}
+    <p>Готово {{ ready }} из {{ batch.labels|length }}.</p>
+    {% if pending %}<p>Ждём остальные этикетки. PDF откроется, когда все файлы будут готовы.</p>{% endif %}
+    {% if failures %}
+    <ul class="error">
+      {% for posting, reason in failures %}<li>{% if posting %}{{ posting }} · {% endif %}{{ reason }}</li>{% endfor %}
+    </ul>
+    <form action="/label-batches" method="post">
+      <input type="hidden" name="account" value="{{ batch.account }}">
+      {% if batch.labels|selectattr("title")|list %}<input type="hidden" name="with_title" value="true">{% endif %}
+      {% if autoprint %}<input type="hidden" name="autoprint" value="true">{% endif %}
+      {% if hide_printed %}<input type="hidden" name="hide_printed" value="true">{% endif %}
+      {% if show_waiting %}<input type="hidden" name="show_waiting" value="true">{% endif %}
+      <button class="button" type="submit">Повторить запрос</button>
+    </form>
+    {% elif pending %}
+    <a href="{{ status_url }}">Обновить состояние</a>
+    {% endif %}
+  {% endif %}
+</section>
+{% endblock %}

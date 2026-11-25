@@ -1,30 +1,53 @@
 {% extends "base.html" %}
+{% from "label_controls.html" import label_controls, waiting_control %}
 {% block title %}Отправление {{ order.posting_number }}{% endblock %}
+{% block head %}
+<script src="/static/label-load.js" defer></script>
+<script src="/static/label-window.js" defer></script>
+{% endblock %}
 {% block content %}
-<a class="back" href="/orders?account={{ order.account_key }}">← К отправлениям</a>
-<div class="heading"><h1>{{ order.posting_number }}</h1><span class="tag">{{ status_label }}</span></div>
+<a class="back" href="{{ orders_url(account, hide_printed, hide_waiting) }}">← К отправлениям</a>
+<div data-order-label>
+{% set number = label_number(label_job_id, order.account_key) %}
+<div class="heading">
+  <div>
+    <h1>{{ order.posting_number }}</h1>
+    <div class="label-number" data-label-number{% if not number %} hidden{% endif %}>{% if number %}№ этикетки {{ number }}{% endif %}</div>
+  </div>
+  <span class="tag">{{ status_label }}</span>
+</div>
 <section class="panel">
   <dl class="details">
-    <div><dt>Кабинет</dt><dd>{{ order.account_key }}</dd></div>
+    <div><dt>Кабинет</dt><dd>{{ cabinet_names[order.account_key] }}</dd></div>
     <div><dt>Номер заказа</dt><dd>{{ data.order_number or '—' }}</dd></div>
-    <div><dt>Начало обработки</dt><dd>{{ data.created_at[:16]|replace('T', ' ') ~ ' UTC' if data.created_at else '—' }}</dd></div>
-    <div><dt>Срок отгрузки</dt><dd>{{ data.shipment_date[:16]|replace('T', ' ') ~ ' UTC' if data.shipment_date else '—' }}</dd></div>
+    {% if data.supply_id %}<div><dt>Поставка</dt><dd>{{ data.supply_id }}</dd></div>{% endif %}
+    <div><dt>Начало обработки</dt><dd>{{ data.created_at|msk }}</dd></div>
+    <div><dt>Срок отгрузки</dt><dd>{{ data.shipment_date|msk }}</dd></div>
     <div><dt>Склад</dt><dd>{{ data.warehouse or '—' }}</dd></div>
     <div><dt>Способ доставки</dt><dd>{{ data.delivery_method or '—' }}</dd></div>
   </dl>
-  {% if order.status == 'awaiting_deliver' %}
-  <form action="/orders/{{ order.account_key }}/{{ order.posting_number }}/label" method="post">
-    <button class="button" type="submit">Печать этикетки</button>
-  </form>
+  {% if waiting %}
+  <div class="assembly-actions">
+    <span class="tag offline">В ожидании</span>
+    {% include "waiting_print.html" %}
+    {{ waiting_control(order, waiting) }}
+  </div>
+  {% elif order.status in label_statuses %}
+  {% include "label_print_option.html" %}
+  {{ label_controls(order, printed, label_job_id) }}
+  {% elif order.status == 'wb_new' %}
+  {% include "wb_assembly_actions.html" %}
   {% endif %}
+  {% if not waiting and order.status != 'wb_new' %}{{ waiting_control(order, waiting) }}{% endif %}
 </section>
+</div>
 <section class="panel">
   <h2>Товары</h2>
   <div class="table"><table>
-    <thead><tr><th scope="col">Название</th><th scope="col">Артикул</th><th scope="col">SKU</th><th scope="col">Количество</th><th scope="col">Цена за шт.</th></tr></thead>
+    <thead><tr><th scope="col">Название</th><th scope="col">Артикул</th><th scope="col">SKU</th><th scope="col">Дата подачи объявления</th><th scope="col">Количество</th><th scope="col">Цена за шт.</th></tr></thead>
     <tbody>{% for product in data.products %}
-      <tr><td>{{ product.name or '—' }}</td><td>{{ product.offer_id or '—' }}</td><td>{{ product.sku or '—' }}</td><td>{{ product.quantity }}</td><td>{{ product.price or '—' }}</td></tr>
-    {% else %}<tr><td colspan="5">Нет данных о товарах.</td></tr>{% endfor %}</tbody>
+      <tr><td>{% include "product_cover.html" %} {{ product.name or '—' }}{% include "product_storage.html" %}</td><td>{{ product.offer_id or '—' }}</td><td>{{ product.sku or '—' }}</td><td>{{ product.listing_created_at|date_msk }}</td><td>{{ product.quantity }}</td><td>{{ product.price or '—' }}</td></tr>
+    {% else %}<tr><td colspan="6">Нет данных о товарах.</td></tr>{% endfor %}</tbody>
   </table></div>
 </section>
 {% endblock %}

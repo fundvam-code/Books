@@ -1,0 +1,35 @@
+{% extends "base.html" %}
+{% block title %}Журнал печати{% endblock %}
+{% block content %}
+<a class="back" href="{{ back_url }}">← К отправлениям</a>
+<div class="heading"><h1>Журнал печати</h1></div>
+<p>Задания, которые агент передал в очередь принтера.</p>
+{% if rows %}
+<div class="table panel">
+  <table>
+    <thead>
+      <tr><th scope="col">Время (МСК)</th><th scope="col">Кабинет</th><th scope="col">Название книги</th><th scope="col">Отправление</th><th scope="col">Номер этикетки</th></tr>
+    </thead>
+    <tbody>
+      {% for row in rows %}
+      <tr>
+        <td>{{ row.event_at|msk }}{% if row.historical %}<br><small>Время создания</small>{% endif %}</td>
+        <td>{{ cabinet_names[row.account_key] }}</td>
+        <td>{{ row.book_title or '—' }}</td>
+        <td>{{ row.posting_number }}</td>
+        <td>{{ row.label_number or '—' }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% else %}
+<p class="empty">{% if page == 1 %}Подтверждённых заданий пока нет.{% else %}На этой странице записей нет.{% endif %}</p>
+{% endif %}
+{% if page > 1 or has_next %}
+<nav class="tabs" aria-label="Страницы журнала">
+  {% if page > 1 %}<a href="/print-log?page={{ page - 1 }}&amp;{{ return_query }}">Предыдущая</a>{% endif %}
+  {% if has_next %}<a href="/print-log?page={{ page + 1 }}&amp;{{ return_query }}">Следующая</a>{% endif %}
+</nav>
+{% endif %}
+{% endblock %}
