@@ -423,6 +423,12 @@ def has_printed_label():
     ).exists()
 
 
+def printed_books_total(db) -> int:
+    return db.scalar(select(func.count()).select_from(
+        select(PrintLog.account_key, PrintLog.posting_number).distinct().subquery()
+    )) or 0
+
+
 def order_stage_counts(db, accounts):
     waiting = select(OrderWaiting.posting_number).where(
         OrderWaiting.account_key == Order.account_key,
@@ -479,6 +485,7 @@ def orders(request: Request, account: str = "all", hide_printed: bool = False, s
         recent_shift = bool(shift and shift.revision == shift_started and shift.started_at
                             and now() < shift.started_at + timedelta(seconds=90))
         stage_counts = order_stage_counts(db, tuple(registered))
+        printed_total = printed_books_total(db)
         query = orders_with_labels().where(Order.account_key.in_(keys), Order.status.in_(tuple(labels)))
         if hide_printed:
             query = query.where(or_(LabelPrint.posting_number.is_(None), OrderWaiting.posting_number.is_not(None)))
@@ -513,6 +520,7 @@ def orders(request: Request, account: str = "all", hide_printed: bool = False, s
         "account": account, "cabinets": cabinets, "boards": boards,
         "active_tab_title": cabinet_names[account] if account != "all" else "Все кабинеты",
         "active_tab_count": stage_counts[account],
+        "printed_total": printed_total,
         "tabs": [
             ("all", "Все кабинеты", stage_counts["all"]),
             *((key, cabinet_names[key], stage_counts[key]) for key in registered),
@@ -539,6 +547,12 @@ def stage_counts():
     with Session() as db:
         accounts = tuple(db.scalars(select(Cabinet.key)))
         return order_stage_counts(db, accounts)
+
+
+@app.get("/orders/printed-total")
+def printed_total():
+    with Session() as db:
+        return {"total": printed_books_total(db)}
 
 
 @app.get("/orders/{account_key}/{posting_number}")

@@ -2,7 +2,7 @@
 {% from "label_controls.html" import label_controls, waiting_control %}
 {% block title %}{{ active_tab_title }} ({{ active_tab_count|join(' / ') }}) — Заказы FBS{% endblock %}
 {% block head %}
-<script src="/static/orders.js?v=3" defer></script>
+<script src="/static/orders.js?v=4" defer></script>
 <script src="/static/label-load.js" defer></script>
 <script src="/static/label-window.js" defer></script>
 {% endblock %}
@@ -65,7 +65,10 @@
     </article>
 {% endmacro %}
 <div class="heading">
-  <h1>Активные отправления</h1>
+  <div class="heading-primary">
+    <h1>Активные отправления</h1>
+    <a class="printed-total" href="/print-log?{{ orders_query('all', hide_printed, hide_waiting) }}" title="Все напечатанные этикетки во всех кабинетах">Напечатано книг: <strong data-printed-total-value>{{ printed_total }}</strong></a>
+  </div>
   <span class="connection {{ 'online' if online else 'offline' }}">Агент {{ 'в сети' if online else 'не в сети' }}</span>
 </div>
 <nav class="tabs" aria-label="Кабинеты">

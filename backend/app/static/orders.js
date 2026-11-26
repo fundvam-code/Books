@@ -35,7 +35,26 @@ async function refreshStageCounts() {
     }
 }
 
-setInterval(refreshStageCounts, 60_000);
+const printedTotalValue = document.querySelector("[data-printed-total-value]");
+
+async function refreshPrintedTotal() {
+    if (!printedTotalValue) return;
+    try {
+        const response = await fetch("/orders/printed-total", { cache: "no-store" });
+        if (!response.ok) return;
+        const data = await response.json();
+        if (Number.isInteger(data.total)) printedTotalValue.textContent = data.total;
+    } catch {
+        // Keep the last total until the dashboard responds again.
+    }
+}
+
+function refreshDashboardCounts() {
+    refreshStageCounts();
+    refreshPrintedTotal();
+}
+
+setInterval(refreshDashboardCounts, 60_000);
 document.addEventListener("visibilitychange", () => {
-    if (!document.hidden) refreshStageCounts();
+    if (!document.hidden) refreshDashboardCounts();
 });

@@ -19,9 +19,12 @@ a:focus-visible, button:focus-visible { outline: 3px solid #377be2; outline-offs
 .mark { display: grid; place-content: center; width: 2rem; height: 2rem; border-radius: .5rem; color: white; background: #2866cf; }
 .page { width: min(75rem, calc(100% - 2rem)); margin: 2rem auto 4rem; }
 .heading { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: .8rem; margin: 1rem 0; }
+.heading-primary { display: flex; flex-wrap: wrap; align-items: baseline; gap: .75rem; }
 h1 { font-size: clamp(1.55rem, 4vw, 2.25rem); letter-spacing: -.035em; margin: 0; overflow-wrap: anywhere; }
 h2 { font-size: 1.1rem; margin: 0 0 1rem; }
-.connection, .tag, .count { display: inline-block; border-radius: .5rem; padding: .2rem .55rem; font-size: .83rem; background: #e8effa; color: #254c82; }
+.connection, .tag, .count, .printed-total { display: inline-block; border-radius: .5rem; padding: .2rem .55rem; font-size: .83rem; background: #e8effa; color: #254c82; }
+.printed-total { text-decoration: none; }
+.printed-total strong { margin-left: .2rem; font-variant-numeric: tabular-nums; }
 .online { color: #0a6242; background: #dff6eb; }
 .offline { color: #894116; background: #ffeedf; }
 .tabs { display: flex; flex-wrap: wrap; gap: .3rem; border-bottom: 1px solid var(--line); }
