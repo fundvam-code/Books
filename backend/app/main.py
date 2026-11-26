@@ -736,6 +736,19 @@ def confirm_shift(request: Request, revision: Annotated[UUID, Form()]):
     return RedirectResponse("/orders?" + urlencode({"shift_started": new_revision}), status_code=303)
 
 
+def title_required(account_key: str) -> bool:
+    return account_key in OZON_ACCOUNTS
+
+
+def ozon_batch(db, batch) -> bool:
+    ids = [UUID(item["job_id"]) for item in batch.labels]
+    if not ids:
+        return False
+    return db.scalar(select(Job.id).where(
+        Job.id.in_(ids), Job.account_key.in_(OZON_ACCOUNTS),
+    ).limit(1)) is not None
+
+
 def label_url(path: str, **options: bool) -> str:
     query = urlencode({name: "true" for name, enabled in options.items() if enabled})
     return f"{path}?{query}" if query else path
@@ -839,6 +852,7 @@ def print_job_status(request: Request, task_id: UUID, account: AccountFilter | N
         if task is None:
             raise HTTPException(404, "Задание печати недоступно")
         batch = db.get(LabelBatch, task.batch_id)
+        ozon_labels = ozon_batch(db, batch)
         ready, pending, failures = batch_versions(db, batch, LABEL_DIR)
     state = task.state
     if state == "sending" and task.lease_until <= now():
@@ -849,7 +863,7 @@ def print_job_status(request: Request, task_id: UUID, account: AccountFilter | N
         "title_error": state == "failed" and task.error == TITLE_SPACE_ERROR,
         "title_postings": [item["posting_number"] for item in batch.labels
                            if item.get("title_no_space") and item.get("posting_number")],
-        "originals_url": label_url(f"/label-batches/{batch.id}", originals=True),
+        "originals_url": label_url(f"/label-batches/{batch.id}", originals=True) if not ozon_labels else None,
     })
 
 
@@ -943,6 +957,7 @@ def request_label(request: Request, account_key: Account, posting_number: str,
                   with_title: Annotated[bool, Form()] = False, autoprint: Annotated[bool, Form()] = False,
                   open_pdf: Annotated[bool, Form()] = False):
     require_dashboard_origin(request)
+    with_title = with_title or title_required(account_key)
     with write_transaction() as db:
         order = db.get(Order, (account_key, posting_number), with_for_update=True)
         if order is None or order.status not in LABEL_STATUSES:
@@ -998,13 +1013,17 @@ def label_batch(request: Request, batch_id: UUID, originals: bool = False, autop
         batch = db.get(LabelBatch, batch_id)
         if batch is None or batch.expires_at <= now():
             raise HTTPException(404, "Партия этикеток недоступна")
+        ozon_labels = ozon_batch(db, batch)
+        if originals and ozon_labels:
+            raise HTTPException(409, "Для этикеток Ozon печать без названия недоступна")
         ready, pending, failures = batch_versions(db, batch, LABEL_DIR)
     context = {"batch": batch, "ready": ready, "failures": failures,
                "pending": pending, "autoprint": autoprint, "hide_printed": hide_printed, "show_waiting": show_waiting,
                "status_url": label_url(f"/label-batches/{batch_id}", autoprint=autoprint, hide_printed=hide_printed,
                                        show_waiting=show_waiting),
                "originals_url": label_url(f"/label-batches/{batch_id}", originals=True,
-                                          autoprint=autoprint, hide_printed=hide_printed, show_waiting=show_waiting)}
+                                          autoprint=autoprint, hide_printed=hide_printed, show_waiting=show_waiting)
+                                if not ozon_labels else None}
     if pending or failures:
         return templates.TemplateResponse(request, "label_batch.html", context)
     try:
@@ -1017,7 +1036,8 @@ def label_batch(request: Request, batch_id: UUID, originals: bool = False, autop
         return templates.TemplateResponse(request, "label_batch.html", context, status_code=409)
     except (PyPdfError, PdfiumError, OSError):
         context["merge_error"] = True
-        context["can_open_originals"] = not originals and any(item["title"] for item in batch.labels)
+        context["can_open_originals"] = not originals and not ozon_labels and any(
+            item["title"] for item in batch.labels)
         return templates.TemplateResponse(request, "label_batch.html", context, status_code=409)
     return inline_pdf(data, "labels.pdf")
 
@@ -1029,6 +1049,7 @@ def label_status(request: Request, job_id: UUID, with_title: bool = False, autop
         job = db.get(Job, job_id)
     if job is None or job.kind != "label_pdf":
         raise HTTPException(404, "Этикетка не найдена")
+    with_title = with_title or title_required(job.account_key)
     state = job.state
     if state == "ready" and (job.label_until <= now() or not pdf_is_available(job.id)):
         state = "expired"
@@ -1055,6 +1076,7 @@ def label_pdf(request: Request, job_id: UUID, with_title: bool = False, autoprin
     path = LABEL_DIR / f"{job_id}.pdf"
     if not job or job.kind != "label_pdf" or job.state != "ready" or job.label_until <= now() or not path.is_file():
         raise HTTPException(404, "Этикетка недоступна")
+    with_title = with_title or title_required(job.account_key)
     marketplace = "wb" if job.account_key == WB_ACCOUNT else "ozon"
     filename = f"{marketplace}-{job.posting_number}.pdf"
     if not with_title:
@@ -1068,10 +1090,11 @@ def label_pdf(request: Request, job_id: UUID, with_title: bool = False, autoprin
             data = add_title(path.read_bytes(), title, wb=job.account_key == WB_ACCOUNT)
             return inline_pdf(data, filename)
         except (NoTitleSpace, PyPdfError, PdfiumError, OSError):
-            error = "Не удалось разместить название внизу этикетки. Откройте оригинальный PDF."
+            error = "Не удалось разместить название внизу этикетки."
     else:
         error = "В отправлении нет названия книги."
     return templates.TemplateResponse(request, "label.html", {
-        "job": job, "state": "ready", "title_error": error, "with_title": False,
+        "job": job, "state": "ready", "title_error": error, "with_title": with_title,
+        "ozon": title_required(job.account_key),
         "pdf_url": label_url(f"/labels/{job_id}/pdf", autoprint=autoprint),
     }, status_code=409)

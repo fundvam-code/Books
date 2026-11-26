@@ -1,4 +1,4 @@
 <p class="error" role="alert">Не удалось разместить название внизу этикетки.</p>
 {% if title_postings %}<p>Отправления: {{ title_postings|join(', ') }}</p>{% endif %}
 <p>Пакет не отправлен на принтер.</p>
-<a class="button" href="{{ originals_url }}">Открыть все этикетки без названий</a>
+{% if originals_url %}<a class="button" href="{{ originals_url }}">Открыть все этикетки без названий</a>{% endif %}

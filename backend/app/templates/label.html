@@ -10,7 +10,7 @@
   {% if state == 'ready' %}
     <h2>Этикетка готова</h2>
     {% if title_error %}<p class="error">{{ title_error }}</p>{% endif %}
-    <a class="button" href="{{ pdf_url }}">{{ 'Открыть оригинальный PDF' if title_error else 'Открыть PDF для печати' }}</a>
+    {% if not title_error or not ozon %}<a class="button" href="{{ pdf_url }}">{{ 'Открыть оригинальный PDF' if title_error else 'Открыть PDF для печати' }}</a>{% endif %}
   {% elif state == 'failed' %}
     <h2>Не удалось получить этикетку</h2>
     <p>{{ job.error }}</p>

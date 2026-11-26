@@ -104,7 +104,11 @@
         <input type="hidden" name="autoprint" value="true" disabled>
         {% if hide_printed %}<input type="hidden" name="hide_printed" value="true">{% endif %}
         {% if not hide_waiting %}<input type="hidden" name="show_waiting" value="true">{% endif %}
+        {% if target == wb_account %}
         <label class="label-option"><input type="checkbox" name="with_title" value="true"> Печатать названия книг на этикетках</label>
+        {% else %}
+        <input type="hidden" name="with_title" value="true">
+        {% endif %}
         <button class="button" type="submit">{{ text }}</button>
       </form>
     {% endmacro %}

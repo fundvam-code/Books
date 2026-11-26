@@ -12,11 +12,11 @@ from sqlalchemy import and_, or_, select
 from sqlalchemy.dialects.postgresql import insert
 
 from .db import Cabinet, Job, LabelBatch, LabelPrint, Order, OzonAssembly, PrintLog, PrintTask, write_transaction
-from .jobs import ACTIVE, LABEL_STATUSES, REASSIGNED_LABEL_ERROR, WB_ACCOUNT, now
+from .jobs import ACTIVE, LABEL_STATUSES, OZON_ACCOUNTS, REASSIGNED_LABEL_ERROR, WB_ACCOUNT, now
 from .label_title import NoTitleSpace, add_title
 
 PRINT_LEASE = timedelta(minutes=2)
-TITLE_SPACE_ERROR = "На этикетке нет места для названия. Повторите печать без названия."
+TITLE_SPACE_ERROR = "На этикетке нет места для названия. Проверьте название и повторите печать."
 
 
 class BatchTitleSpace(NoTitleSpace):
@@ -50,7 +50,8 @@ def pdf_label_number(path, account_key):
 
 def batch_item(order, job_id, with_title):
     title = book_title(order)
-    return {"job_id": str(job_id), "title": title if with_title else "", "book_title": title,
+    print_title = title if with_title or order.account_key in OZON_ACCOUNTS else ""
+    return {"job_id": str(job_id), "title": print_title, "book_title": title,
             "account_key": order.account_key, "posting_number": order.posting_number}
 
 

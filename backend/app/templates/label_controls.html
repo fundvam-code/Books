@@ -16,8 +16,11 @@
     <input type="hidden" name="open_pdf" value="true">
     <input type="hidden" name="autoprint" value="true" disabled>
     {% set title = book_title(order) %}
-    {% if title or order.account_key == wb_account %}
+    {% if order.account_key == wb_account %}
     <label class="label-option"><input type="checkbox" name="with_title" value="true"{% if not title %} disabled{% endif %}> Печатать название книги на этикетке{% if not title %} (название ещё не загружено){% endif %}</label>
+    {% else %}
+    <input type="hidden" name="with_title" value="true">
+    {% if not title %}<span class="label-option muted">Название ещё не загружено</span>{% endif %}
     {% endif %}
     <button class="button {{ 'secondary' if return_account }}" type="submit"{% if label_job_id %} hidden{% endif %}>Печать этикетки</button>
   </form>
