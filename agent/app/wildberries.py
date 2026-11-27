@@ -9,7 +9,7 @@ from time import monotonic
 
 import httpx
 
-from .errors import MarketplaceError
+from .errors import MarketplaceError, response_detail
 
 MARKETPLACE = "https://marketplace-api.wildberries.ru"
 CONTENT = "https://content-api.wildberries.ru"
@@ -61,15 +61,22 @@ class Wildberries:
         if code in (401, 402, 403):
             raise MarketplaceError("access")
         if code != expected:
-            raise MarketplaceError("label" if label else "response", label and code == 409)
+            raise MarketplaceError(
+                "label" if label else "response",
+                label and code == 409,
+                detail=response_detail(reply),
+            )
         if expected == 204:
             return None
         try:
             data = reply.json()
         except ValueError as error:
-            raise MarketplaceError("response", True) from error
+            raise MarketplaceError("response", True, detail=response_detail(reply)) from error
         if not isinstance(data, dict):
-            raise MarketplaceError("response", True)
+            raise MarketplaceError(
+                "response", True,
+                detail=f"HTTP {code}: ожидался JSON-объект, получен {type(data).__name__}",
+            )
         return data
 
     async def snapshot(self, key, _known):
@@ -82,13 +89,16 @@ class Wildberries:
             page = await self.request("GET", "/api/v3/orders", params=params)
             rows, cursor = page["orders"], page["next"]
             if not isinstance(rows, list) or type(cursor) is not int or cursor < 0:
-                raise MarketplaceError("response", True)
+                raise MarketplaceError(
+                    "response", True,
+                    detail="HTTP 200: ожидались orders (список) и next (неотрицательное число)",
+                )
             for row in rows:
                 orders[row["id"]] = row
             if not rows or cursor == 0:
                 break
             if cursor in cursors:
-                raise MarketplaceError("response", True)
+                raise MarketplaceError("response", True, detail="HTTP 200: повторный cursor при чтении заказов")
             cursors.add(cursor)
             params["next"] = cursor
 
@@ -99,7 +109,7 @@ class Wildberries:
             result = await self.request("POST", "/api/v3/orders/status", json={"orders": batch})
             received = {row["id"]: row for row in result["orders"]}
             if received.keys() != set(batch):
-                raise MarketplaceError("response", True)
+                raise MarketplaceError("response", True, detail="HTTP 200: список статусов не совпал с запрошенными заказами")
             statuses.update(received)
 
         active = [
@@ -161,13 +171,16 @@ class Wildberries:
                                         params={"limit": PAGE_SIZE, "next": cursor})
             supplies, cursor = result.get("supplies"), result.get("next", 0)
             if not isinstance(supplies, list) or type(cursor) is not int or cursor < 0:
-                raise MarketplaceError("response", True)
+                raise MarketplaceError(
+                    "response", True,
+                    detail="HTTP 200: ожидались supplies (список) и next (неотрицательное число)",
+                )
             for supply in supplies:
                 if not isinstance(supply, dict):
-                    raise MarketplaceError("response", True)
+                    raise MarketplaceError("response", True, detail="HTTP 200: элемент supplies не является объектом")
                 done = supply.get("done")
                 if type(done) is not bool:
-                    raise MarketplaceError("response", True)
+                    raise MarketplaceError("response", True, detail="HTTP 200: поле done не является boolean")
                 if not done:
                     supply_id = supply.get("id")
                     if not isinstance(supply_id, str) or not re.fullmatch(r"[A-Za-z0-9_-]{1,80}", supply_id):

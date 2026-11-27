@@ -1,0 +1,11 @@
+services:
+  caddy:
+    environment:
+      DASHBOARD_TLS_MODE: internal
+    ports: !override
+      - "127.0.0.1:${DASHBOARD_HTTPS_PORT:-8443}:443"
+    healthcheck:
+      test: ["CMD-SHELL", "test -s /data/caddy/pki/authorities/local/root.crt && wget -q -O /dev/null http://127.0.0.1:2019/config/"]
+      interval: 2s
+      timeout: 3s
+      retries: 20

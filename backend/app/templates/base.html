@@ -4,12 +4,13 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>{% block title %}Заказы FBS{% endblock %}</title>
-  <link rel="stylesheet" href="/static/dashboard.css?v=5">
+  <link rel="stylesheet" href="/static/dashboard.css?v=7">
   {% block head %}{% endblock %}
 </head>
 <body>
   <header class="site-header">
     <a href="/orders"><span>Заказы <small>FBS</small></span></a>
+    <a href="/monitoring">Мониторинг</a>
   </header>
   <main class="page">{% block content %}{% endblock %}</main>
 </body>

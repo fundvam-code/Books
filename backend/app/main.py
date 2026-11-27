@@ -14,7 +14,7 @@ from uuid import UUID
 import httpx
 from fastapi import Depends, FastAPI, Form, Header, HTTPException, Query, Request, Response
 from fastapi.exceptions import RequestValidationError
-from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
+from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from PIL import Image
@@ -25,18 +25,23 @@ from sqlalchemy import and_, delete, desc, func, or_, select, update
 from sqlalchemy.dialects.postgresql import insert
 
 from .book_storage import StorageLookup, refresh_catalog
-from .db import (BookStorage, Cabinet, Heartbeat, Job, LabelBatch, LabelPrint, Order, OrderWaiting, OzonAssembly, PrintLog, PrintTask, Session, Shift, WbAssembly,
+from .db import (BookStorage, Cabinet, Heartbeat, Job, LabelBatch, LabelPrint, Monitoring, MonitoringEvent, MonitoringOrder, Order, OrderWaiting, OzonAssembly, PrintLog, PrintTask, Session, Shift, WbAssembly,
                  write_transaction)
 from .jobs import (ACTIVE, LABEL_STATUSES, OZON_ACCOUNTS, OZON_STATUSES, PDF_LIMIT, WB_ACCOUNT, WB_ASSEMBLY_KIND,
-                   OZON_ASSEMBLY_KIND, OZON_ASSEMBLY_HEARTBEAT_BASE, OZON_PRINT_HEARTBEAT_BASE,
-                   WB_AUTO_ASSEMBLY_HEARTBEAT_ID, WB_BOARD_STATUSES,
+                    OZON_ASSEMBLY_KIND, OZON_ASSEMBLY_HEARTBEAT_BASE, OZON_PRINT_HEARTBEAT_BASE,
+                    PRINT_AGENT_HEARTBEAT_ID, WB_AUTO_ASSEMBLY_HEARTBEAT_ID, WB_BOARD_STATUSES,
                    ShiftConflict, apply_snapshot, claim, enqueue, fail_job, initialize, maintain, now, start_shift)
 from .label_title import NoTitleSpace, add_title
+from .monitoring import (
+    account_enabled, active_print_postings, monitoring_enabled, pause_monitoring_work, run_monitor_cycle,
+)
+from .monitoring_log import append_event
 from .printing import (PRINT_LEASE, TITLE_SPACE_ERROR, BatchTitleSpace, backfill_print_log,
                        batch_item, batch_versions, batch_writer, book_title,
-                       claim_print, create_batch, label_metadata, mark_submitted_labels, pdf_label_number,
-                       queue_print, record_print)
-from .schemas import Account, AccountFilter, AgentAccounts, AgentHeartbeat, AssemblyStart, Completion, LabelTask, PrintResult
+                       claim_print, confirm_printed_label, create_batch, label_metadata, order_cover_urls, pdf_label_number,
+                       queue_print, record_print, update_monitoring_order)
+from .schemas import (Account, AccountFilter, AgentAccounts, AgentHeartbeat, AssemblyStart, Completion,
+                     LabelTask, MonitoringSettings, PrintResult)
 from .wb_label import sticker_pdf
 
 ROOT = Path(__file__).parent
@@ -105,6 +110,15 @@ async def scheduler():
         await asyncio.sleep(60)
 
 
+async def monitoring_scheduler():
+    while True:
+        try:
+            await asyncio.to_thread(run_monitor_cycle, LABEL_DIR)
+        except Exception:
+            logging.getLogger(__name__).exception("Не удалось выполнить цикл мониторинга")
+        await asyncio.sleep(5)
+
+
 @asynccontextmanager
 async def lifespan(app):
     if len(os.environ.get("AGENT_SHARED_SECRET", "")) < 32 or not os.environ.get("PUBLIC_DOMAIN"):
@@ -113,12 +127,14 @@ async def lifespan(app):
     await asyncio.to_thread(initialize)
     await asyncio.to_thread(backfill_print_log, LABEL_DIR)
     task = asyncio.create_task(scheduler())
+    monitor_task = asyncio.create_task(monitoring_scheduler())
     try:
         yield
     finally:
         task.cancel()
+        monitor_task.cancel()
         with suppress(asyncio.CancelledError):
-            await task
+            await asyncio.gather(task, monitor_task)
 
 
 app = FastAPI(lifespan=lifespan, docs_url=None, redoc_url=None, openapi_url=None)
@@ -173,6 +189,12 @@ def heartbeat(body: AgentHeartbeat, auth: Agent):
                 db.execute(insert(Heartbeat).values(id=WB_AUTO_ASSEMBLY_HEARTBEAT_ID, seen_at=stamp).on_conflict_do_update(
                     index_elements=["id"], set_={"seen_at": stamp},
                 ))
+        if body.print_enabled:
+            db.execute(insert(Heartbeat).values(id=PRINT_AGENT_HEARTBEAT_ID, seen_at=stamp).on_conflict_do_update(
+                index_elements=["id"], set_={"seen_at": stamp},
+            ))
+        else:
+            db.execute(delete(Heartbeat).where(Heartbeat.id == PRINT_AGENT_HEARTBEAT_ID))
         for key in body.ozon_assembly_accounts:
             heartbeat_id = OZON_ASSEMBLY_HEARTBEAT_BASE + int(key)
             db.execute(insert(Heartbeat).values(id=heartbeat_id, seen_at=stamp).on_conflict_do_update(
@@ -234,12 +256,26 @@ def start_wb_assembly(job_id: UUID, auth: Agent, token: Lease, body: AssemblySta
         if job.kind == OZON_ASSEMBLY_KIND:
             action = db.get(OzonAssembly, job.id)
             order = db.get(Order, (job.account_key, job.posting_number), with_for_update=True)
+            if action and action.automatic and (
+                not monitoring_enabled(db.get(Monitoring, 1, with_for_update=True))
+                or not account_enabled(db.get(Monitoring, 1), job.account_key)
+                or db.get(OrderWaiting, (job.account_key, job.posting_number)) is not None
+                or db.get(LabelPrint, (job.account_key, job.posting_number)) is not None
+            ):
+                raise HTTPException(409, "Мониторинг остановлен до начала сборки")
             if action is None or action.started_at is not None or order is None or order.status != "awaiting_packaging":
                 raise HTTPException(409, "Заказ Ozon уже изменён или сборка уже начата")
             action.started_at = now()
             job.lease_until = action.started_at + timedelta(seconds=90)
             return Response(status_code=204)
         action = db.get(WbAssembly, job.id) if job.kind == WB_ASSEMBLY_KIND else None
+        if action and action.automatic and (
+            not monitoring_enabled(db.get(Monitoring, 1, with_for_update=True))
+            or not account_enabled(db.get(Monitoring, 1), job.account_key)
+            or db.get(OrderWaiting, (job.account_key, job.posting_number)) is not None
+            or db.get(LabelPrint, (job.account_key, job.posting_number)) is not None
+        ):
+            raise HTTPException(409, "Мониторинг остановлен до начала сборки")
         if action is None or action.started_at is not None:
             raise HTTPException(409, "Перевод уже начат или недоступен")
         if body is not None:
@@ -308,6 +344,17 @@ def complete_job(job_id: UUID, body: Completion, auth: Agent, token: Lease):
             else:
                 raise HTTPException(422, "Ожидался снимок заказов")
             if job.kind in (WB_ASSEMBLY_KIND, OZON_ASSEMBLY_KIND):
+                assembly = db.get(
+                    OzonAssembly if job.kind == OZON_ASSEMBLY_KIND else WbAssembly,
+                    job.id,
+                )
+                if assembly and assembly.automatic:
+                    order = db.get(Order, (job.account_key, job.posting_number))
+                    if order is not None:
+                        append_event(
+                            db, order, "assembly_confirmed", "Сборка подтверждена маркетплейсом",
+                            event_key=f"assembly-confirmed:{job.id}",
+                        )
                 db.execute(delete(OrderWaiting).where(
                     OrderWaiting.account_key == job.account_key,
                     OrderWaiting.posting_number == job.posting_number,
@@ -471,8 +518,11 @@ def get_or_enqueue_label(db, order):
 
 
 @app.get("/orders")
-def orders(request: Request, account: str = "all", hide_printed: bool = False, shift_started: UUID | None = None,
+def orders(request: Request, account: str = "all", hide_printed: bool | None = None, shift_started: UUID | None = None,
            hide_waiting: bool = True, storage_refresh: Literal["updated", "failed", "unconfigured"] | None = None):
+    explicit_hide_printed = hide_printed is not None
+    if hide_printed is None:
+        hide_printed = request.cookies.get("hide_printed") == "true"
     with Session() as db:
         registered = {cabinet.key: cabinet for cabinet in db.scalars(select(Cabinet).order_by(Cabinet.key))}
         if account != "all" and account not in registered:
@@ -481,6 +531,7 @@ def orders(request: Request, account: str = "all", hide_printed: bool = False, s
         cabinets = [registered[key] for key in keys]
         seen = db.get(Heartbeat, 1)
         catalog = db.get(BookStorage, 1)
+        monitor = db.get(Monitoring, 1)
         shift = db.get(Shift, 1) if shift_started else None
         recent_shift = bool(shift and shift.revision == shift_started and shift.started_at
                             and now() < shift.started_at + timedelta(seconds=90))
@@ -516,11 +567,12 @@ def orders(request: Request, account: str = "all", hide_printed: bool = False, s
         boards.append(("Ozon", [(labels[status], orders_by_status[status]) for status in OZON_STATUSES]))
     if WB_ACCOUNT in keys:
         boards.append(("Wildberries", [(labels[status], orders_by_status[status]) for status in WB_BOARD_STATUSES]))
-    return templates.TemplateResponse(request, "orders.html", {
+    response = templates.TemplateResponse(request, "orders.html", {
         "account": account, "cabinets": cabinets, "boards": boards,
         "active_tab_title": cabinet_names[account] if account != "all" else "Все кабинеты",
         "active_tab_count": stage_counts[account],
         "printed_total": printed_total,
+        "monitoring": monitor,
         "tabs": [
             ("all", "Все кабинеты", stage_counts["all"]),
             *((key, cabinet_names[key], stage_counts[key]) for key in registered),
@@ -540,6 +592,9 @@ def orders(request: Request, account: str = "all", hide_printed: bool = False, s
         "ozon_assembly_accounts": ozon_assembly_accounts,
         "ozon_print_accounts": ozon_print_accounts,
     })
+    if explicit_hide_printed:
+        response.set_cookie("hide_printed", str(hide_printed).lower(), max_age=365 * 24 * 60 * 60, httponly=True)
+    return response
 
 
 @app.get("/orders/stage-counts")
@@ -584,6 +639,107 @@ def dashboard_origin():
 def require_dashboard_origin(request: Request):
     if request.headers.get("origin") != dashboard_origin():
         raise HTTPException(403, "Откройте форму печати в дашборде")
+
+
+@app.get("/monitoring")
+def monitoring_page(request: Request):
+    with Session() as db:
+        control = db.get(Monitoring, 1)
+        records = db.scalars(
+            select(MonitoringEvent)
+            .order_by(MonitoringEvent.event_at.desc(), MonitoringEvent.id.desc())
+            .limit(200)
+        ).all()
+        confirmations = monitoring_confirmations(db, records)
+    return templates.TemplateResponse(request, "monitoring.html", {
+        "monitoring": control,
+        "enabled": monitoring_enabled(control),
+        "ozon_enabled": bool(control and control.ozon_enabled),
+        "wb_enabled": bool(control and control.wb_enabled),
+        "checked_at": format_msk(control.checked_at if control else None),
+        "records": records,
+        "confirmations": confirmations,
+    })
+
+
+@app.get("/monitoring/journal")
+def monitoring_journal():
+    with Session() as db:
+        records = db.scalars(
+            select(MonitoringEvent)
+            .order_by(MonitoringEvent.event_at.desc(), MonitoringEvent.id.desc())
+            .limit(200)
+        ).all()
+        confirmations = monitoring_confirmations(db, records)
+    return {
+        "items": [
+            {
+                "time": format_msk(record.event_at),
+                "account": cabinet_names[record.account_key],
+                "posting_number": record.posting_number,
+                "label_number": record.label_number,
+                "title": record.book_title,
+                "event_type": record.event_type,
+                "message": record.message,
+                "error": record.error,
+                "image_urls": record.image_urls
+                if record.event_type == "marked_printed" or record.id in confirmations else [],
+                "confirm_url": confirmations.get(record.id),
+            }
+            for record in records
+        ],
+    }
+
+
+def monitoring_confirmations(db, records):
+    accepted = {
+        UUID(record.event_key.split(":")[1]): record.id
+        for record in records if record.event_type == "printer_accepted" and record.event_key
+    }
+    if not accepted:
+        return {}
+    rows = db.scalars(select(PrintLog).where(
+        PrintLog.task_id.in_(accepted), PrintLog.awaiting_confirmation.is_(True),
+    ))
+    return {
+        accepted[row.task_id]: f"/print-log/{row.task_id}/{row.label_job_id}/confirm"
+        for row in rows
+    }
+
+
+@app.post("/monitoring/settings")
+def save_monitoring_settings(request: Request, settings: MonitoringSettings):
+    require_dashboard_origin(request)
+    with write_transaction() as db:
+        control = db.get(Monitoring, 1, with_for_update=True)
+        control.enabled = settings.enabled
+        control.ozon_enabled = settings.ozon_enabled
+        control.wb_enabled = settings.wb_enabled
+        control.checked_at = None
+        disabled = []
+        if not settings.enabled or not settings.ozon_enabled:
+            disabled.extend(OZON_ACCOUNTS)
+        if not settings.enabled or not settings.wb_enabled:
+            disabled.append(WB_ACCOUNT)
+        pause_monitoring_work(db, disabled)
+    return {
+        "enabled": settings.enabled,
+        "ozon_enabled": settings.ozon_enabled,
+        "wb_enabled": settings.wb_enabled,
+        "checked_at": format_msk(None),
+    }
+
+
+@app.get("/monitoring/state")
+def monitoring_state():
+    with Session() as db:
+        control = db.get(Monitoring, 1)
+        return {
+            "enabled": monitoring_enabled(control),
+            "ozon_enabled": bool(control and control.ozon_enabled),
+            "wb_enabled": bool(control and control.wb_enabled),
+            "checked_at": format_msk(control.checked_at if control else None),
+        }
 
 
 @app.post("/book-storage/refresh")
@@ -807,6 +963,7 @@ def download_print_pdf(task_id: UUID, auth: Agent, token: Lease):
             task.state = "failed"
             task.lease_until = None
             task.error = TITLE_SPACE_ERROR
+            update_monitoring_order(db, task.id, "failed", task.error)
             batch.labels = [
                 {**item, "title_no_space": item["job_id"] in error.job_ids} for item in batch.labels
             ]
@@ -815,6 +972,7 @@ def download_print_pdf(task_id: UUID, auth: Agent, token: Lease):
             task.state = "failed"
             task.lease_until = None
             task.error = "Не удалось подготовить PDF. Проверьте наличие этикеток и настройку названия книги."
+            update_monitoring_order(db, task.id, "failed", task.error)
             return JSONResponse({"detail": task.error}, status_code=409)
         batch.labels = label_metadata(db, batch, LABEL_DIR)
     return inline_pdf(data, "labels.pdf")
@@ -824,8 +982,44 @@ def download_print_pdf(task_id: UUID, auth: Agent, token: Lease):
 def start_print(task_id: UUID, auth: Agent, token: Lease):
     with write_transaction() as db:
         task = locked_print_task(db, task_id, token, "leased")
+        if task.automatic:
+            control = db.get(Monitoring, 1, with_for_update=True)
+            monitored = db.scalar(select(MonitoringOrder).where(
+                MonitoringOrder.print_task_id == task.id,
+            ).with_for_update())
+            if (not monitoring_enabled(control) or monitored is None
+                    or not account_enabled(control, monitored.account_key)
+                    or db.get(OrderWaiting, (monitored.account_key, monitored.posting_number)) is not None
+                    or db.get(LabelPrint, (monitored.account_key, monitored.posting_number)) is not None
+                    or db.scalar(select(select(PrintLog.task_id).where(
+                        PrintLog.account_key == monitored.account_key,
+                        PrintLog.posting_number == monitored.posting_number,
+                        PrintLog.awaiting_confirmation.is_(True),
+                    ).exists()))):
+                task.state = "failed"
+                task.error = "Мониторинг остановлен до отправки этикетки на принтер."
+                task.lease_token = None
+                task.lease_until = None
+                if monitored:
+                    monitored.state = "waiting_label"
+                    monitored.print_task_id = None
+                    monitored.updated_at = now()
+                    monitored.error = None
+                return JSONResponse({"detail": task.error}, status_code=409)
         task.state = "sending"
         task.lease_until = now() + PRINT_LEASE
+        if task.automatic:
+            batch = db.get(LabelBatch, task.batch_id)
+            for item in batch.labels:
+                order = db.get(Order, (item.get("account_key"), item.get("posting_number")))
+                if order is not None:
+                    append_event(
+                        db, order, "printing", "Этикетка отправляется на принтер",
+                        event_key=f"printing:{task.id}:{order.account_key}:{order.posting_number}",
+                        label_number=pdf_label_number(
+                            LABEL_DIR / f'{item["job_id"]}.pdf', order.account_key,
+                        ),
+                    )
     return Response(status_code=204)
 
 
@@ -837,10 +1031,64 @@ def finish_print(task_id: UUID, body: PrintResult, auth: Agent, token: Lease):
         task.lease_until = None
         if body.status == "failed":
             task.error = "Принтер не принял задание. Проверьте выбранную очередь macOS."
+            update_monitoring_order(db, task.id, "failed", task.error)
+        elif body.status == "unknown":
+            task.error = "Результат отправки на принтер неизвестен."
+            update_monitoring_order(db, task.id, "unknown", task.error)
         elif body.status == "submitted":
-            record_print(db, task, db.get(LabelBatch, task.batch_id), LABEL_DIR, submitted_at=now())
-            mark_submitted_labels(db, task.id)
+            batch = db.get(LabelBatch, task.batch_id)
+            record_print(db, task, batch, LABEL_DIR, submitted_at=now())
+            if task.automatic:
+                for item in batch.labels:
+                    account_key = item.get("account_key")
+                    posting_number = item.get("posting_number")
+                    order = db.get(Order, (account_key, posting_number))
+                    if order is None:
+                        continue
+                    print_record = db.get(PrintLog, (task.id, UUID(item["job_id"])))
+                    label_number = print_record.label_number if print_record else item.get("label_number")
+                    append_event(
+                        db, order, "printer_accepted", "Задание принято очередью принтера",
+                        event_key=f"printer-accepted:{task.id}:{account_key}:{posting_number}",
+                        label_number=label_number,
+                    )
+                update_monitoring_order(db, task.id, "awaiting_confirm")
+            else:
+                for item in batch.labels:
+                    label_job_id = UUID(item["job_id"])
+                    confirm_printed_label(db, task.id, label_job_id)
+                    record = db.get(PrintLog, (task.id, label_job_id))
+                    if record is not None:
+                        record.awaiting_confirmation = False
     return Response(status_code=204)
+
+
+@app.post("/print-log/{task_id}/{label_job_id}/confirm")
+def confirm_print(request: Request, task_id: UUID, label_job_id: UUID):
+    require_dashboard_origin(request)
+    with write_transaction(exclusive=True) as db:
+        record = db.get(PrintLog, (task_id, label_job_id))
+        if record is None:
+            raise HTTPException(404, "Запись печати не найдена")
+        accepted_key = f"printer-accepted:{task_id}:{record.account_key}:{record.posting_number}"
+        if not db.scalar(select(MonitoringEvent.id).where(MonitoringEvent.event_key == accepted_key)):
+            raise HTTPException(409, "Подтверждение доступно только для заданий мониторинга")
+        if record.awaiting_confirmation:
+            order = confirm_printed_label(db, task_id, label_job_id)
+            if order is None:
+                raise HTTPException(409, "Этикетка больше не относится к активному отправлению")
+            db.execute(update(PrintLog).where(
+                PrintLog.account_key == record.account_key,
+                PrintLog.posting_number == record.posting_number,
+                PrintLog.awaiting_confirmation.is_(True),
+            ).values(awaiting_confirmation=False))
+            append_event(
+                db, order, "marked_printed", "Заказ отмечен как напечатанный",
+                event_key=f"marked-printed:{task_id}:{record.account_key}:{record.posting_number}",
+                label_number=record.label_number,
+            )
+            update_monitoring_order(db, task_id, "submitted")
+    return RedirectResponse("/monitoring", status_code=303)
 
 
 @app.get("/print-log")
@@ -851,8 +1099,12 @@ def print_log(request: Request, page: Annotated[int, Query(ge=1, le=1_000_000)] 
         rows = db.scalars(select(PrintLog).order_by(
             PrintLog.event_at.desc(), PrintLog.task_id.desc(), PrintLog.label_job_id.desc(),
         ).offset((page - 1) * page_size).limit(page_size + 1)).all()
+        covers = order_cover_urls(db, {
+            (row.account_key, row.posting_number) for row in rows[:page_size] if not row.image_urls
+        })
     return templates.TemplateResponse(request, "print_log.html", {
         "rows": rows[:page_size], "page": page, "has_next": len(rows) > page_size,
+        "covers": covers,
         "back_url": orders_url(account, hide_printed, hide_waiting),
         "return_query": orders_query(account, hide_printed, hide_waiting),
     })
@@ -868,12 +1120,18 @@ def print_job_status(request: Request, task_id: UUID, account: AccountFilter | N
         batch = db.get(LabelBatch, task.batch_id)
         ozon_labels = ozon_batch(db, batch)
         ready, pending, failures = batch_versions(db, batch, LABEL_DIR)
+        dashboard_item = next((item for item in batch.labels if item.get("dashboard_print")), None)
+        dashboard_marked = bool(dashboard_item and db.get(
+            LabelPrint, (dashboard_item["account_key"], dashboard_item["posting_number"]),
+        ))
     state = task.state
     if state == "sending" and task.lease_until <= now():
         state = "unknown"
     return templates.TemplateResponse(request, "print_job.html", {
         "task": task, "batch": batch, "state": state, "ready": ready, "pending": pending, "failures": failures,
         "back_url": orders_url(account or batch.account, hide_printed, hide_waiting),
+        "dashboard_print": dashboard_item is not None,
+        "dashboard_marked": dashboard_marked,
         "title_error": state == "failed" and task.error == TITLE_SPACE_ERROR,
         "title_postings": [item["posting_number"] for item in batch.labels
                            if item.get("title_no_space") and item.get("posting_number")],
@@ -898,6 +1156,12 @@ def mark_label_print(request: Request, account_key: Account, posting_number: str
             db.execute(insert(LabelPrint).values(
                 account_key=account_key, posting_number=posting_number,
             ).on_conflict_do_nothing())
+            db.execute(update(PrintLog).where(
+                PrintLog.account_key == account_key,
+                PrintLog.posting_number == posting_number,
+                PrintLog.awaiting_confirmation.is_(True),
+                PrintLog.task_id.in_(select(PrintTask.id).where(PrintTask.automatic.is_(False))),
+            ).values(awaiting_confirmation=False))
         else:
             db.execute(delete(LabelPrint).where(
                 LabelPrint.account_key == account_key,
@@ -962,6 +1226,37 @@ def print_waiting_label(request: Request, account_key: Account, posting_number: 
             raise HTTPException(409, "Этикетка уже отмечена как напечатанная")
         job_id, _ = get_or_enqueue_label(db, order)
         task_id = queue_print(db, account_key, [batch_item(order, job_id, False)])
+    query = orders_query(account or account_key, hide_printed, hide_waiting)
+    return RedirectResponse(f"/print-jobs/{task_id}?{query}", status_code=303)
+
+
+@app.post("/orders/{account_key}/{posting_number}/dashboard-print")
+def dashboard_print(request: Request, account_key: Account, posting_number: str,
+                    account: AccountFilter | None = None, hide_printed: bool = False, hide_waiting: bool = True,
+                    with_title: Annotated[bool, Form()] = False):
+    require_dashboard_origin(request)
+    with write_transaction(exclusive=True) as db:
+        key = (account_key, posting_number)
+        order = db.get(Order, key)
+        if order is None or order.status not in LABEL_STATUSES or db.get(OrderWaiting, key):
+            return PlainTextResponse("Отправление недоступно для печати с дашборда", status_code=409)
+        if db.get(LabelPrint, key):
+            return PlainTextResponse("Этикетка уже отмечена как напечатанная", status_code=409)
+        if key in active_print_postings(db, now()):
+            return PlainTextResponse("Задание печати уже выполняется", status_code=409)
+        if db.scalar(select(select(PrintLog.task_id).where(
+            PrintLog.account_key == account_key, PrintLog.posting_number == posting_number,
+            PrintLog.awaiting_confirmation.is_(True),
+        ).exists())):
+            return PlainTextResponse(
+                "Этикетка уже передана в очередь принтера. Если она вышла и заказ упакован, "
+                "подтвердите упаковку на странице мониторинга или отметьте печать в карточке заказа.",
+                status_code=409,
+            )
+        job_id, _ = get_or_enqueue_label(db, order)
+        item = batch_item(order, job_id, with_title)
+        item["dashboard_print"] = True
+        task_id = queue_print(db, account_key, [item])
     query = orders_query(account or account_key, hide_printed, hide_waiting)
     return RedirectResponse(f"/print-jobs/{task_id}?{query}", status_code=303)
 

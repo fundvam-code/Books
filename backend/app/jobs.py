@@ -1,17 +1,20 @@
 from datetime import UTC, datetime, timedelta
+import re
 from uuid import uuid4
 
 from sqlalchemy import delete, inspect, or_, select, text, update
 from sqlalchemy.dialects.postgresql import insert
 
-from .db import (Base, Cabinet, Job, LabelBatch, LabelPrint, Order, OrderWaiting, OzonAssembly, PrintLog, PrintTask, Shift, WbAssembly, engine,
+from .db import (Base, Cabinet, Job, LabelBatch, LabelPrint, Monitoring, MonitoringOrder, Order, OrderWaiting, OzonAssembly, PrintLog, PrintTask, Shift, WbAssembly, engine,
                  write_transaction)
+from .monitoring_log import append_event
 
 OZON_ACCOUNTS = ("1", "2")
 WB_ACCOUNT = "w"
 WB_ASSEMBLY_KIND = "wb_assembly"
 OZON_ASSEMBLY_KIND = "ozon_assembly"
 WB_AUTO_ASSEMBLY_HEARTBEAT_ID = 3
+PRINT_AGENT_HEARTBEAT_ID = 4
 OZON_ASSEMBLY_HEARTBEAT_BASE = 10
 OZON_PRINT_HEARTBEAT_BASE = 20
 ACTIVE = ("pending", "leased")
@@ -46,11 +49,30 @@ def now():
     return datetime.now(UTC)
 
 
+def safe_marketplace_detail(value):
+    if not value:
+        return None
+    value = re.sub(
+        r"(?i)(authorization|api[-_ ]?key|client[-_ ]?id|token|secret|password)"
+        r'(["\']?\s*[:=]\s*["\']?)[^,\s}"\']+',
+        r"\1\2[скрыто]",
+        value,
+    )
+    value = re.sub(r"(?i)\bbearer\s+\S+", "Bearer [скрыто]", value)
+    value = re.sub(r"\b[A-Za-z0-9_-]{40,}\b", "[скрыто]", value)
+    value = " ".join(value.split())
+    return value[:800] + ("..." if len(value) > 800 else "")
+
+
 def initialize():
     with engine.begin() as connection:
         connection.execute(text("SELECT pg_advisory_xact_lock(73608201)"))
         # Начальная схема v1. Последующие версии добавляют миграции здесь.
         Base.metadata.create_all(connection)
+        connection.execute(text(
+            "ALTER TABLE print_log ADD COLUMN IF NOT EXISTS awaiting_confirmation BOOLEAN NOT NULL DEFAULT FALSE"
+        ))
+        connection.execute(text("ALTER TABLE print_log ADD COLUMN IF NOT EXISTS image_urls JSONB"))
         columns = inspect(connection).get_columns(WbAssembly.__tablename__)
         if any(column["name"] == "supply_id" and not column["nullable"] for column in columns):
             connection.execute(text("ALTER TABLE wb_assembly ALTER COLUMN supply_id DROP NOT NULL"))
@@ -61,15 +83,24 @@ def initialize():
             connection.execute(text(
                 "ALTER TABLE wb_assembly ADD COLUMN print_task_id UUID REFERENCES print_tasks(id) ON DELETE SET NULL"
             ))
+        for table, column in (("jobs", "automatic"), ("print_tasks", "automatic"), ("wb_assembly", "automatic"),
+                              ("ozon_assembly", "automatic")):
+            columns = {item["name"] for item in inspect(connection).get_columns(table)}
+            if column not in columns:
+                connection.execute(text(
+                    f"ALTER TABLE {table} ADD COLUMN {column} BOOLEAN NOT NULL DEFAULT FALSE"
+                ))
         connection.execute(insert(Shift).values(id=1, revision=uuid4()).on_conflict_do_nothing())
+        connection.execute(insert(Monitoring).values(id=1).on_conflict_do_nothing())
         for key in OZON_ACCOUNTS:
             connection.execute(insert(Cabinet).values(key=key).on_conflict_do_nothing())
 
 
-def enqueue(db, kind, key, posting=""):
+def enqueue(db, kind, key, posting="", *, automatic=False):
     job_id = uuid4()
     query = insert(Job).values(
         id=job_id, kind=kind, account_key=key, posting_number=posting, available_at=now(),
+        automatic=automatic,
     ).on_conflict_do_nothing().returning(Job.id)
     return db.scalar(query)
 
@@ -86,8 +117,30 @@ def maintain(label_dir):
         db.execute(update(Job).where(
             Job.kind == OZON_ASSEMBLY_KIND, Job.state == "leased", Job.lease_until <= instant, ozon_started,
         ).values(state="failed", error=ERRORS["ozon_assembly_unknown"], lease_until=None))
+        unknown_prints = db.execute(
+            select(PrintTask, LabelBatch, MonitoringOrder)
+            .join(LabelBatch, LabelBatch.id == PrintTask.batch_id)
+            .join(MonitoringOrder, MonitoringOrder.print_task_id == PrintTask.id)
+            .where(PrintTask.state == "sending", PrintTask.lease_until <= instant)
+        ).all()
+        for task, batch, monitored in unknown_prints:
+            item = next((item for item in batch.labels
+                         if item.get("account_key") == monitored.account_key
+                         and item.get("posting_number") == monitored.posting_number), {})
+            order = db.get(Order, (monitored.account_key, monitored.posting_number))
+            if order is not None:
+                append_event(
+                    db, order, "unknown", "Неизвестный результат отправки на печать",
+                    event_key=f"print-unknown:{task.id}:{monitored.account_key}:{monitored.posting_number}",
+                    error="Агент не подтвердил результат отправки.",
+                    label_number=item.get("label_number"),
+                )
         db.execute(update(PrintTask).where(PrintTask.state == "sending", PrintTask.lease_until <= instant)
                    .values(state="unknown", lease_until=None))
+        db.execute(update(MonitoringOrder).where(
+            MonitoringOrder.print_task_id.in_(select(PrintTask.id).where(PrintTask.state == "unknown")),
+            MonitoringOrder.state == "queued",
+        ).values(state="unknown", updated_at=instant, error="Результат отправки на принтер неизвестен"))
         printing = select(PrintTask.id).where(
             PrintTask.batch_id == LabelBatch.id, PrintTask.state.in_(("leased", "sending")),
             PrintTask.lease_until > instant,
@@ -98,6 +151,9 @@ def maintain(label_dir):
         db.execute(delete(Job).where(
             Job.state.in_(("done", "failed", "expired")),
             Job.available_at < now() - timedelta(days=7),
+            ~select(PrintLog.label_job_id).where(
+                PrintLog.label_job_id == Job.id, PrintLog.awaiting_confirmation.is_(True),
+            ).exists(),
         ))
         expired = db.scalars(select(Job).where(
             Job.state == "ready", Job.label_until <= now(),
@@ -134,6 +190,8 @@ def start_shift(revision):
         if db.scalar(select(ozon_writing)):
             raise ShiftConflict("Дождитесь ответа Ozon о сборке и повторите.")
 
+        control = db.get(Monitoring, 1)
+        control.enabled = False
         db.execute(delete(LabelBatch))
         db.execute(delete(PrintLog))
         db.execute(delete(LabelPrint))
@@ -242,6 +300,10 @@ def discard_reassigned_stickers(db, rows):
         ):
             changed.append(order.posting_number)
     if changed:
+        db.execute(update(PrintLog).where(
+            PrintLog.account_key == WB_ACCOUNT, PrintLog.posting_number.in_(changed),
+            PrintLog.awaiting_confirmation.is_(True),
+        ).values(awaiting_confirmation=False))
         filters = (Job.account_key == WB_ACCOUNT, Job.kind == "label_pdf", Job.posting_number.in_(changed))
         db.execute(update(Job).where(*filters, Job.state.in_(ACTIVE)).values(
             state="failed", lease_until=None, error=REASSIGNED_LABEL_ERROR,
@@ -250,6 +312,10 @@ def discard_reassigned_stickers(db, rows):
             label_until=now(), error=REASSIGNED_LABEL_ERROR,
         ))
         db.execute(delete(LabelPrint).where(LabelPrint.account_key == WB_ACCOUNT, LabelPrint.posting_number.in_(changed)))
+        db.execute(delete(MonitoringOrder).where(
+            MonitoringOrder.account_key == WB_ACCOUNT,
+            MonitoringOrder.posting_number.in_(changed),
+        ))
 
 
 def fail_job(db, job, completion):
@@ -259,6 +325,22 @@ def fail_job(db, job, completion):
         job.error = "Wildberries отклонил токен записи. Для WB_WRITE_TOKEN нужны «Маркетплейс» и «Чтение и запись»."
     elif job.kind == OZON_ASSEMBLY_KIND and completion.error == "access":
         job.error = "Ozon отклонил права ключа. Для сборки требуется Posting FBS с доступом на чтение и запись."
+    detail = safe_marketplace_detail(completion.detail)
+    if detail:
+        job.error = f"{job.error} Ответ маркетплейса: {detail}"
+    action = (
+        db.get(WbAssembly, job.id) if job.kind == WB_ASSEMBLY_KIND
+        else db.get(OzonAssembly, job.id) if job.kind == OZON_ASSEMBLY_KIND
+        else None
+    )
+    if action and action.automatic:
+        order = db.get(Order, (job.account_key, job.posting_number))
+        if order is not None:
+            append_event(
+                db, order, "failed", "Не удалось выполнить сборку",
+                event_key=f"assembly-failed:{job.id}:{job.attempts}",
+                error=job.error,
+            )
     if job.kind == "sync_orders":
         db.get(Cabinet, job.account_key).error = job.error
     started = (job.kind == WB_ASSEMBLY_KIND and db.get(WbAssembly, job.id).started_at is not None

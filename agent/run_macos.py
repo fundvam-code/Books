@@ -37,6 +37,7 @@ if __name__ == "__main__":
         if not config.get(key):
             raise SystemExit(f"Укажите {key} в .env.agent")
         os.environ[key] = config[key]
+    ca_file = config.get("DASHBOARD_CA_FILE", "")
     os.environ["OZON_PRINTER"] = config.get("OZON_PRINTER", "")
     profile_path = config_path.parent / config.get("OZON_ENV_FILE", ".env.ozon")
     profiles = read_env(profile_path, raw=True, optional=True)
@@ -49,4 +50,4 @@ if __name__ == "__main__":
         os.environ[key] = wb.get(key, "")
     logging.basicConfig(level=logging.INFO)
     logging.getLogger("httpx").setLevel(logging.WARNING)
-    asyncio.run(run())
+    asyncio.run(run(dashboard_ca_file=config_path.parent / ca_file if ca_file else None))

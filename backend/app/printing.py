@@ -8,12 +8,14 @@ from uuid import UUID, uuid4
 
 from pypdf import PdfReader, PdfWriter
 from pypdf.errors import PyPdfError
-from sqlalchemy import and_, or_, select
+from sqlalchemy import and_, or_, select, tuple_, update
 from sqlalchemy.dialects.postgresql import insert
 
-from .db import Cabinet, Job, LabelBatch, LabelPrint, Order, OzonAssembly, PrintLog, PrintTask, write_transaction
+from .db import (Cabinet, Job, LabelBatch, LabelPrint, Monitoring, MonitoringOrder, Order,
+                 OzonAssembly, PrintLog, PrintTask, write_transaction)
 from .jobs import ACTIVE, LABEL_STATUSES, OZON_ACCOUNTS, REASSIGNED_LABEL_ERROR, WB_ACCOUNT, now
 from .label_title import NoTitleSpace, add_title
+from .monitoring_log import append_event
 
 PRINT_LEASE = timedelta(minutes=2)
 TITLE_SPACE_ERROR = "На этикетке нет места для названия. Проверьте название и повторите печать."
@@ -61,13 +63,17 @@ def create_batch(db, account, items):
     return batch_id
 
 
-def queue_print(db, account, items):
+def queue_print(db, account, items, *, automatic=False):
     printable = [{"job_id": item["job_id"], "title": item["title"]} for item in items]
-    fingerprint = sha256(json.dumps(printable, sort_keys=True).encode()).hexdigest()
+    fingerprint_data = {"items": printable, "automatic": True} if automatic else printable
+    if any(item.get("dashboard_print") for item in items):
+        fingerprint_data = {"items": printable, "dashboard_print": True}
+    fingerprint = sha256(json.dumps(fingerprint_data, sort_keys=True).encode()).hexdigest()
     batch_id = create_batch(db, account, items)
     db.flush()
     task_id = db.scalar(insert(PrintTask).values(
         id=uuid4(), batch_id=batch_id, fingerprint=fingerprint, state="pending", created_at=now(),
+        automatic=automatic,
     ).on_conflict_do_nothing().returning(PrintTask.id))
     if task_id is not None:
         return task_id
@@ -99,19 +105,40 @@ def label_metadata(db, batch, label_dir):
     return items
 
 
+def order_cover_urls(db, keys):
+    if not keys:
+        return {}
+    orders = db.scalars(select(Order).where(tuple_(Order.account_key, Order.posting_number).in_(keys)))
+    covers = {}
+    for order in orders:
+        urls = []
+        for product in order.data.get("products", []):
+            for field in ("image_full_url", "image_url"):
+                url = product.get(field)
+                if isinstance(url, str) and url.startswith("https://"):
+                    urls.append(url)
+                    break
+        covers[order.account_key, order.posting_number] = list(dict.fromkeys(urls))
+    return covers
+
+
 def record_print(db, task, batch, label_dir, submitted_at=None):
+    items = [item for item in label_metadata(db, batch, label_dir) if item.get("posting_number")]
+    covers = order_cover_urls(db, {(item["account_key"], item["posting_number"]) for item in items})
     rows = [
         {"task_id": task.id, "label_job_id": UUID(item["job_id"]),
          "event_at": submitted_at or task.created_at, "historical": submitted_at is None,
+         "awaiting_confirmation": submitted_at is not None,
          "account_key": item["account_key"], "posting_number": item["posting_number"],
-         "book_title": item["book_title"], "label_number": item.get("label_number")}
-        for item in label_metadata(db, batch, label_dir) if item.get("posting_number")
+         "book_title": item["book_title"], "label_number": item.get("label_number"),
+         "image_urls": covers.get((item["account_key"], item["posting_number"]))}
+        for item in items
     ]
     if rows:
         db.execute(insert(PrintLog).on_conflict_do_nothing(), rows)
 
 
-def mark_submitted_labels(db, task_id):
+def confirm_printed_label(db, task_id, label_job_id):
     # Serialize with order synchronization so a replaced WB sticker cannot mark its successor.
     accounts = select(PrintLog.account_key).where(PrintLog.task_id == task_id)
     db.execute(select(Cabinet.key).where(Cabinet.key.in_(accounts)).order_by(Cabinet.key).with_for_update()).all()
@@ -119,12 +146,37 @@ def mark_submitted_labels(db, task_id):
         PrintLog, and_(PrintLog.account_key == Order.account_key, PrintLog.posting_number == Order.posting_number),
     ).join(Job, Job.id == PrintLog.label_job_id).where(
         PrintLog.task_id == task_id,
+        PrintLog.label_job_id == label_job_id,
+        PrintLog.awaiting_confirmation.is_(True),
         or_(Order.status.in_(LABEL_STATUSES), select(OzonAssembly.job_id).where(
             OzonAssembly.label_job_id == PrintLog.label_job_id, OzonAssembly.print_after.is_(True),
         ).exists()),
         Job.error.is_distinct_from(REASSIGNED_LABEL_ERROR),
     ).distinct()
-    db.execute(insert(LabelPrint).from_select(["account_key", "posting_number"], printed).on_conflict_do_nothing())
+    key = db.execute(printed).first()
+    if key is None:
+        return None
+    db.execute(insert(LabelPrint).values(account_key=key[0], posting_number=key[1]).on_conflict_do_nothing())
+    return db.get(Order, tuple(key))
+
+
+def update_monitoring_order(db, task_id, state, error=None):
+    monitored_orders = db.scalars(select(MonitoringOrder).where(
+        MonitoringOrder.print_task_id == task_id,
+    ).with_for_update()).all()
+    for monitored in monitored_orders:
+        monitored.state = state
+        monitored.updated_at = now()
+        monitored.error = error
+        if state in ("failed", "unknown"):
+            order = db.get(Order, (monitored.account_key, monitored.posting_number))
+            if order is not None:
+                message = "Неизвестный результат отправки на печать" if state == "unknown" else "Ошибка печати"
+                append_event(
+                    db, order, state, message,
+                    event_key=f"print-{state}:{task_id}:{monitored.account_key}:{monitored.posting_number}",
+                    error=error,
+                )
 
 
 def backfill_print_log(label_dir):
@@ -164,7 +216,10 @@ def batch_writer(db, batch, label_dir, originals=False):
         source = (label_dir / f'{item["job_id"]}.pdf').read_bytes()
         if item["title"] and not originals:
             try:
-                source = add_title(source, item["title"], wb=UUID(item["job_id"]) in wb_jobs)
+                source = add_title(
+                    source, item["title"], wb=UUID(item["job_id"]) in wb_jobs,
+                    require_complete=item.get("require_complete", False),
+                )
             except NoTitleSpace:
                 blocked.append(item["job_id"])
                 continue
@@ -184,10 +239,20 @@ def claim_print(db, label_dir):
         batch = db.get(LabelBatch, task.batch_id)
         if batch.expires_at <= instant:
             continue
+        monitored = db.scalar(select(MonitoringOrder).where(MonitoringOrder.print_task_id == task.id))
+        if task.automatic:
+            control = db.get(Monitoring, 1)
+            account_active = bool(control and control.enabled and any(
+                control.ozon_enabled if item.get("account_key") in ("1", "2") else control.wb_enabled
+                for item in batch.labels
+            ))
+            if not account_active:
+                continue
         _, pending, failures = batch_versions(db, batch, label_dir)
         if failures:
             task.state = "failed"
             task.error = failures[0][1]
+            update_monitoring_order(db, task.id, "failed", task.error)
         elif not pending:
             task.state = "leased"
             task.lease_token = uuid4()

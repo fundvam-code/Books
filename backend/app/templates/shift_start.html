@@ -5,6 +5,7 @@
 <div class="heading"><h1>Начало смены</h1></div>
 <section class="panel">
   <p>Список отправлений, загруженные этикетки, отметки и журнал печати будут очищены. Дашборд заново загрузит заказы всех кабинетов.</p>
+  <p>Мониторинг будет выключен. После начала смены его можно включить снова.</p>
   {% if error %}<p class="error" role="alert">{{ error }}</p>{% endif %}
   <form action="/shift/start" method="post">
     <input type="hidden" name="revision" value="{{ revision }}">

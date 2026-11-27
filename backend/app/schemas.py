@@ -55,7 +55,8 @@ class Completion(BaseModel):
     result: SyncResult | None = None
     error: Literal["access", "rate", "unavailable", "response", "label", "profile",
                    "assembly_conflict", "assembly_unknown", "assembly_no_supply", "assembly_multiple_supplies",
-                   "ozon_assembly_conflict", "ozon_assembly_unknown"] | None = None
+                    "ozon_assembly_conflict", "ozon_assembly_unknown"] | None = None
+    detail: str | None = Field(default=None, max_length=1200)
     retry_after: int | None = Field(default=None, ge=0, le=3600)
     assembly_status: Literal["awaiting_deliver"] | None = None
 
@@ -72,12 +73,19 @@ class PrintResult(BaseModel):
     status: Literal["submitted", "failed", "unknown"]
 
 
+class MonitoringSettings(BaseModel):
+    enabled: bool
+    ozon_enabled: bool
+    wb_enabled: bool
+
+
 class AgentAccounts(BaseModel):
     account_keys: list[Account] = Field(min_length=1, max_length=3)
     ozon_assembly_accounts: list[Literal["1", "2"]] = Field(default_factory=list)
     ozon_print_accounts: list[Literal["1", "2"]] = Field(default_factory=list)
     wb_assembly: bool = False
     wb_auto_assembly: bool = False
+    print_enabled: bool = False
 
 
 class AgentHeartbeat(AgentAccounts):

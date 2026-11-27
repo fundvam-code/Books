@@ -1,0 +1,64 @@
+#!/usr/bin/env bash
+set -euo pipefail
+umask 077
+
+if [[ $# != 3 ]]; then
+    echo "Использование: $0 backup|restore server|macos каталог_копии" >&2
+    exit 2
+fi
+
+mode=$1
+target=$2
+backup=$3
+compose=(docker compose)
+case "$target" in
+    server) compose+=(--env-file .env.server -f compose.server.yaml) ;;
+    macos) compose+=(--env-file .env.macos -f compose.server.yaml -f compose.macos.yaml) ;;
+    *) echo "Выберите server или macos" >&2; exit 2 ;;
+esac
+
+database=("${compose[@]}" exec -T database)
+labels=("${compose[@]}" run --no-deps --rm -T --pull never --entrypoint tar dashboard)
+check_copy() {
+    [[ -s "$backup/dashboard.dump" && -s "$backup/labels.tar.gz" ]]
+    "${database[@]}" pg_restore --list < "$backup/dashboard.dump" > /dev/null
+    "${labels[@]}" -tzf - < "$backup/labels.tar.gz" > /dev/null
+}
+
+case "$mode" in
+    backup)
+        if "${compose[@]}" ps --status running --services | grep -qx dashboard; then
+            echo "Сначала остановите dashboard для согласованной копии базы и PDF" >&2
+            exit 1
+        fi
+        mkdir -m 700 -- "$backup"
+        "${database[@]}" pg_dump -U dashboard -d dashboard -Fc --no-owner --no-privileges > "$backup/dashboard.dump"
+        "${labels[@]}" -czf - -C /labels . > "$backup/labels.tar.gz"
+        check_copy
+        touch "$backup/complete"
+        ;;
+    restore)
+        if [[ ! -f "$backup/complete" ]]; then
+            echo "Копия не завершена: $backup" >&2
+            exit 1
+        fi
+        running=$("${compose[@]}" ps --status running --services)
+        if [[ "$running" != database ]]; then
+            echo "В целевом проекте должна работать только database" >&2
+            exit 1
+        fi
+        relations=$("${database[@]}" psql -XAt -v ON_ERROR_STOP=1 -U dashboard -d dashboard -c \
+            "SELECT count(*) FROM pg_class JOIN pg_namespace ON relnamespace = pg_namespace.oid WHERE nspname = 'public'")
+        if [[ "$relations" != 0 ]]; then
+            echo "Целевая база уже содержит данные схемы public. Используйте свежий проект Compose." >&2
+            exit 1
+        fi
+        "${compose[@]}" run --no-deps --rm -T --pull never --entrypoint sh dashboard -ec \
+            'test -z "$(ls -A /labels)" || { echo "Том /labels уже содержит файлы" >&2; exit 1; }'
+        check_copy
+        "${labels[@]}" -xzf - -C /labels < "$backup/labels.tar.gz"
+        "${database[@]}" pg_restore -U dashboard -d dashboard --single-transaction --no-owner --no-privileges \
+            < "$backup/dashboard.dump"
+        ;;
+    *) echo "Выберите backup или restore" >&2; exit 2 ;;
+esac

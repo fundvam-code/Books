@@ -1,0 +1,10 @@
+<form id="monitoring-controls" class="monitor-controls" aria-label="Настройки мониторинга заказов">
+  {% for name, caption in [('enabled', 'Мониторинг'), ('ozon_enabled', 'Ozon'), ('wb_enabled', 'Wildberries')] %}
+  {% set selected = monitoring and monitoring[name] %}
+  <label class="monitor-toggle{% if selected and monitoring.enabled %} active{% endif %}">
+    <input type="checkbox" name="{{ name }}"{% if selected %} checked{% endif %}>
+    {{ caption }}
+  </label>
+  {% endfor %}
+  <span id="monitoring-settings-error" class="error" role="alert" hidden></span>
+</form>

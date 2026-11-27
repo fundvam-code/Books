@@ -2,9 +2,10 @@
 {% from "label_controls.html" import label_controls, waiting_control %}
 {% block title %}{{ active_tab_title }} ({{ active_tab_count|join(' / ') }}) — Заказы FBS{% endblock %}
 {% block head %}
+<script src="/static/monitoring.js?v=9" defer></script>
 <script src="/static/orders.js?v=4" defer></script>
 <script src="/static/label-load.js" defer></script>
-<script src="/static/label-window.js" defer></script>
+<script src="/static/label-window.js?v=2" defer></script>
 {% endblock %}
 {% block content %}
 {% macro order_card(order, printed, label_job_id, waiting) %}
@@ -71,6 +72,7 @@
   </div>
   <span class="connection {{ 'online' if online else 'offline' }}">Агент {{ 'в сети' if online else 'не в сети' }}</span>
 </div>
+{% include "monitoring_controls.html" %}
 <nav class="tabs" aria-label="Кабинеты">
   {% for key, title, count in tabs %}
   <a href="{{ orders_url(key, hide_printed, hide_waiting) }}"{% if key == account %} aria-current="page"{% endif %}>{{ title }} (<span data-stage-count="{{ key }}" title="Ожидают сборки / ждут отгрузки без отметки о печати">{{ count|join(' / ') }}</span>)</a>
@@ -93,6 +95,7 @@
 <div class="orders-filter">
   <form action="/orders" method="get">
     <input type="hidden" name="account" value="{{ account }}">
+    <input type="hidden" name="hide_printed" value="false">
     <label><input id="hide-printed" type="checkbox" name="hide_printed" value="true"{% if hide_printed %} checked{% endif %}> Скрывать напечатанные</label>
     <input type="hidden" name="hide_waiting" value="false">
     <label><input id="hide-waiting" type="checkbox" name="hide_waiting" value="true"{% if hide_waiting %} checked{% endif %}> Скрывать ожидающие</label>
@@ -146,6 +149,7 @@
   {% endfor %}
 </section>
 <footer class="orders-footer" id="book-storage">
+  <a href="/monitoring">Мониторинг новых заказов</a>
   <a href="/print-log?{{ orders_query(account, hide_printed, hide_waiting) }}">Журнал печати</a>
   <a class="button secondary" href="/shift/start">Начало смены</a>
   <form action="/book-storage/refresh" method="post">

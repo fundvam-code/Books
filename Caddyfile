@@ -9,6 +9,10 @@
 (dashboard_tls_default) {
 }
 
+(dashboard_tls_internal) {
+    tls internal
+}
+
 (dashboard_tls_ip) {
     tls {
         issuer acme {

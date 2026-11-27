@@ -3,7 +3,7 @@ from datetime import UTC, datetime, timedelta
 
 import httpx
 
-from .errors import MarketplaceError as OzonError
+from .errors import MarketplaceError as OzonError, response_detail
 
 ORIGIN = "https://api-seller.ozon.ru"
 ACTIVE = ("awaiting_packaging", "awaiting_deliver")
@@ -31,8 +31,17 @@ class Ozon:
         if label and code == 409:
             raise OzonError("label", True)
         if code >= 400:
-            raise OzonError("label" if label else "response")
-        data = response.json()
+            raise OzonError("label" if label else "response", detail=response_detail(response))
+        try:
+            data = response.json()
+        except ValueError as error:
+            raise OzonError("response", detail=response_detail(response)) from error
+        if not isinstance(data, dict):
+            detail = response_detail(response)
+            raise OzonError(
+                "response",
+                detail=f"{detail}; ожидался JSON-объект, получен {type(data).__name__}",
+            )
         result = data.get("result")
         if isinstance(result, dict):
             return {**data, **result}
@@ -51,7 +60,7 @@ class Ozon:
             })
             postings = page["postings"]
             if not isinstance(postings, list) or not isinstance(page["has_next"], bool):
-                raise OzonError("response", True)
+                raise OzonError("response", True, detail="HTTP 200: ожидались postings (список) и has_next (boolean)")
             for row in postings:
                 if row["status"] in ACTIVE:
                     orders[row["posting_number"]] = normalize(key, row)
@@ -59,7 +68,7 @@ class Ozon:
                 break
             cursor = page["cursor"]
             if not cursor or cursor in seen:
-                raise OzonError("response", True)
+                raise OzonError("response", True, detail="HTTP 200: пагинация вернула пустой или повторный cursor")
             seen.add(cursor)
 
         for row in known:
@@ -86,7 +95,7 @@ class Ozon:
                 reply = await self.post("/v3/product/info/list", {"offer_id": offer_ids[offset:offset + 1000]})
                 items = reply.get("items")
                 if not isinstance(items, list):
-                    raise OzonError("response", True)
+                    raise OzonError("response", True, detail="HTTP 200: поле items в ответе о товарах не является списком")
                 for item in items:
                     if isinstance(item, dict) and isinstance(item.get("offer_id"), str):
                         product_id = value_text(item.get("id"))

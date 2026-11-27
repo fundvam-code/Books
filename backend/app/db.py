@@ -28,6 +28,16 @@ class Shift(Base):
     started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
 
+class Monitoring(Base):
+    __tablename__ = "monitoring"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    enabled: Mapped[bool] = mapped_column(default=False, server_default=false())
+    ozon_enabled: Mapped[bool] = mapped_column(default=False, server_default=false())
+    wb_enabled: Mapped[bool] = mapped_column(default=False, server_default=false())
+    checked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
 class BookStorage(Base):
     __tablename__ = "book_storage"
 
@@ -79,6 +89,7 @@ class PrintTask(Base):
     lease_token: Mapped[UUID | None]
     lease_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     error: Mapped[str | None] = mapped_column(Text)
+    automatic: Mapped[bool] = mapped_column(default=False, server_default=false())
 
     __table_args__ = (
         Index("uq_active_print_task", "fingerprint", unique=True,
@@ -97,6 +108,8 @@ class PrintLog(Base):
     posting_number: Mapped[str] = mapped_column(String(80))
     book_title: Mapped[str] = mapped_column(Text)
     label_number: Mapped[str | None] = mapped_column(Text)
+    awaiting_confirmation: Mapped[bool] = mapped_column(default=False, server_default=false())
+    image_urls: Mapped[list | None] = mapped_column(JSONB)
 
 
 class Job(Base):
@@ -114,6 +127,7 @@ class Job(Base):
     ozon_task_id: Mapped[int | None] = mapped_column(BigInteger)
     error: Mapped[str | None] = mapped_column(Text)
     label_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    automatic: Mapped[bool] = mapped_column(default=False, server_default=false())
 
     __table_args__ = (
         Index(
@@ -138,6 +152,7 @@ class WbAssembly(Base):
     started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     print_after: Mapped[bool] = mapped_column(server_default=false())
     print_task_id: Mapped[UUID | None] = mapped_column(ForeignKey("print_tasks.id", ondelete="SET NULL"))
+    automatic: Mapped[bool] = mapped_column(default=False, server_default=false())
 
 
 class OzonAssembly(Base):
@@ -148,6 +163,35 @@ class OzonAssembly(Base):
     started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     label_job_id: Mapped[UUID | None] = mapped_column(ForeignKey("jobs.id", ondelete="SET NULL"), unique=True)
     print_task_id: Mapped[UUID | None] = mapped_column(ForeignKey("print_tasks.id", ondelete="SET NULL"))
+    automatic: Mapped[bool] = mapped_column(default=False, server_default=false())
+
+
+class MonitoringOrder(Base):
+    __tablename__ = "monitoring_orders"
+
+    account_key: Mapped[str] = mapped_column(String(1), primary_key=True)
+    posting_number: Mapped[str] = mapped_column(String(80), primary_key=True)
+    state: Mapped[str] = mapped_column(String(20))
+    label_job_id: Mapped[UUID | None] = mapped_column(ForeignKey("jobs.id", ondelete="SET NULL"))
+    print_task_id: Mapped[UUID | None] = mapped_column(ForeignKey("print_tasks.id", ondelete="SET NULL"))
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    error: Mapped[str | None] = mapped_column(Text)
+
+
+class MonitoringEvent(Base):
+    __tablename__ = "monitoring_events"
+
+    id: Mapped[UUID] = mapped_column(primary_key=True)
+    event_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+    account_key: Mapped[str] = mapped_column(String(1))
+    posting_number: Mapped[str] = mapped_column(String(80))
+    book_title: Mapped[str] = mapped_column(Text)
+    image_urls: Mapped[list] = mapped_column(JSONB, default=list)
+    label_number: Mapped[str | None] = mapped_column(Text)
+    event_type: Mapped[str] = mapped_column(String(32))
+    message: Mapped[str] = mapped_column(Text)
+    error: Mapped[str | None] = mapped_column(Text)
+    event_key: Mapped[str | None] = mapped_column(String(240), unique=True)
 
 
 engine = create_engine(

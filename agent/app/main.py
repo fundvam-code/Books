@@ -1,8 +1,10 @@
 import asyncio
 import logging
 import os
+import ssl
 import sys
 from datetime import UTC, datetime
+from pathlib import Path
 
 import httpx
 
@@ -105,17 +107,21 @@ async def process(server, job, profiles):
                 return
             await asyncio.sleep(5)
         raise MarketplaceError("label", True)
-    except (KeyError, TypeError, ValueError):
-        error = MarketplaceError("response")
+    except (KeyError, TypeError, ValueError) as failure:
+        error = MarketplaceError(
+            "response", detail="В ответе отсутствует обязательное поле" if isinstance(failure, KeyError)
+            else "Некорректный тип или значение поля ответа",
+        )
     except MarketplaceError as failure:
         error = failure
     await server.request("POST", "complete", job=job, json={
         "status": "retryable_error" if error.retry else "permanent_error",
         "error": error.code, "retry_after": error.retry_after,
+        "detail": error.detail,
     })
 
 
-async def run():
+async def run(*, dashboard_ca_file: Path | None = None):
     url = httpx.URL(os.environ.get("DASHBOARD_URL", ""))
     secret = os.environ.get("AGENT_SHARED_SECRET", "")
     if url.scheme != "https" or not url.host or url.userinfo or url.path != "/" or url.query or url.fragment or len(secret) < 32:
@@ -125,8 +131,14 @@ async def run():
         raise SystemExit("Для печати запустите агент нативно на macOS")
     keys = {key: (os.environ.get(f"OZON_CLIENT_ID_{key}"), os.environ.get(f"OZON_API_KEY_{key}"))
             for key in ("1", "2")}
+    verify: bool | ssl.SSLContext = True
+    if dashboard_ca_file is not None:
+        verify = ssl.create_default_context(cafile=str(dashboard_ca_file))
     async with (
-        httpx.AsyncClient(base_url=url, headers={"Authorization": f"Bearer {secret}"}, timeout=15, trust_env=False) as api,
+        httpx.AsyncClient(
+            base_url=url, headers={"Authorization": f"Bearer {secret}"},
+            timeout=15, trust_env=False, verify=verify,
+        ) as api,
         httpx.AsyncClient(timeout=20, trust_env=False) as marketplace,
     ):
         profiles = {key: Ozon(marketplace, client_id, api_key) for key, (client_id, api_key) in keys.items()
@@ -146,6 +158,7 @@ async def run():
             "account_keys": list(profiles), "wb_assembly": wb_assembly, "wb_auto_assembly": wb_assembly,
             "ozon_assembly_accounts": ozon_accounts,
             "ozon_print_accounts": ozon_accounts if printer else [],
+            "print_enabled": bool(printer),
         }
         async with asyncio.TaskGroup() as group:
             group.create_task(heartbeat(server, capabilities))

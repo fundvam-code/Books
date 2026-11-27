@@ -31,7 +31,13 @@ async def print_task(server, printer, task):
         await server.request("POST", route + "/start", headers=headers)
         await server.request("POST", route + "/finish", headers=headers, json={"status": "failed"})
         return
-    await server.request("POST", route + "/start", headers=headers)
+    try:
+        await server.request("POST", route + "/start", headers=headers)
+    except httpx.HTTPStatusError as error:
+        if error.response.status_code == 409:
+            log.info("Сервер отменил задание печати до отправки в очередь")
+            return
+        raise
     status = await asyncio.to_thread(submit_pdf, response.content, printer, task_id)
     await server.request("POST", route + "/finish", headers=headers, json={"status": status})
     if status == "submitted":

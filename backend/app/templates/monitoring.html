@@ -1,0 +1,51 @@
+{% extends "base.html" %}
+{% block title %}Мониторинг заказов — {{ 'Вкл' if enabled else 'Выкл' }}{% endblock %}
+{% block head %}<script src="/static/monitoring.js?v=9" defer></script>{% endblock %}
+{% block content %}
+<h1>Мониторинг заказов</h1>
+{% include "monitoring_controls.html" %}
+<p>Статус мониторинга: <strong id="monitoring-status" class="tag {{ 'online' if enabled else 'offline' }}"
+                                  role="status">{{ 'Включён' if enabled else 'Выключен' }}</strong></p>
+<p>Закрытие страницы не останавливает мониторинг.</p>
+<p class="monitor-last-check">Последняя проверка: <time id="monitoring-checked-at">{{ checked_at }}</time></p>
+<section class="monitor-journal" aria-label="Журнал автоматической печати" aria-live="polite">
+  <table>
+    <thead><tr><th>Время</th><th>Площадка</th><th>Отправление</th><th>Этикетка</th><th>Книга</th><th>Действие</th></tr></thead>
+    <tbody id="monitoring-journal">
+      {% for record in records %}
+      <tr>
+        <td>{{ record.event_at|msk }}</td>
+        <td>{{ cabinet_names[record.account_key] }}</td>
+        <td>{{ record.posting_number }}</td>
+        <td>{{ record.label_number or '—' }}</td>
+        <td>
+          {% if record.event_type == 'marked_printed' or confirmations.get(record.id) %}
+          <span class="monitor-book">
+            {% for image_url in record.image_urls %}
+            <span class="book-cover-wrap" aria-label="Обложка книги">
+              <img class="book-cover-thumb" src="{{ image_url }}" alt="" loading="lazy">
+              <img class="book-cover-zoom" src="{{ image_url }}" alt="" loading="lazy">
+            </span>
+            {% endfor %}
+            <span>{{ record.book_title }}</span>
+          </span>
+          {% else %}{{ record.book_title }}{% endif %}
+        </td>
+        <td>
+          {{ record.message }}
+          {% if record.error %}<div class="error">{{ record.error }}</div>{% endif %}
+          {% if confirmations.get(record.id) %}
+          <div>Ожидает подтверждения</div>
+          <form method="post" action="{{ confirmations[record.id] }}">
+            <button class="button secondary" type="submit">Упаковано</button>
+          </form>
+          {% endif %}
+        </td>
+      </tr>
+      {% else %}
+      <tr class="monitor-empty"><td colspan="6">Записей пока нет</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</section>
+{% endblock %}

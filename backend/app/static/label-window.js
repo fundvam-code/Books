@@ -59,7 +59,8 @@ document.addEventListener("click", (event) => {
 });
 
 for (const form of document.querySelectorAll(".label-output")) {
-    form.addEventListener("submit", () => {
+    form.addEventListener("submit", (event) => {
+        if (event.submitter?.hasAttribute("data-dashboard-print")) return;
         form.elements.autoprint.disabled = !printImmediately.checked;
         const name = "ozon-label-" + crypto.randomUUID();
         const preview = window.open("", name, "popup,width=940,height=780");

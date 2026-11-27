@@ -1,7 +1,7 @@
 {% extends "base.html" %}
 {% block title %}Печать через агент{% endblock %}
 {% block head %}
-{% if state == 'submitted' %}
+{% if state == 'submitted' and not dashboard_print %}
 <script src="/static/print-close.js" defer></script>
 {% elif state in ('pending', 'leased', 'sending') and not failures %}
 <script src="/static/label.js" defer></script>
@@ -13,6 +13,9 @@
 <section class="panel" aria-live="polite">
   {% if state == 'submitted' %}
     <p>PDF передан в очередь принтера на MacBook.</p>
+    {% if dashboard_print %}
+    <p>{{ 'Этикетка отмечена как напечатанная.' if dashboard_marked else 'Не удалось поставить отметку. Проверьте состояние отправления.' }}</p>
+    {% endif %}
   {% elif state == 'unknown' %}
     <p>Агент не подтвердил отправку. Проверьте очередь принтера перед повторной печатью.</p>
   {% elif title_error %}

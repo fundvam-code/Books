@@ -15,7 +15,20 @@
       <tr>
         <td>{{ row.event_at|msk }}{% if row.historical %}<br><small>Время создания</small>{% endif %}</td>
         <td>{{ cabinet_names[row.account_key] }}</td>
-        <td>{{ row.book_title or '—' }}</td>
+        <td>
+          {% set image_urls = row.image_urls or covers.get((row.account_key, row.posting_number), []) %}
+          {% if image_urls %}
+          <span class="monitor-book">
+            {% for image_url in image_urls %}
+            <span class="book-cover-wrap" tabindex="0" aria-label="Обложка книги">
+              <img class="book-cover-thumb" src="{{ image_url }}" alt="" loading="lazy">
+              <img class="book-cover-zoom" src="{{ image_url }}" alt="" loading="lazy">
+            </span>
+            {% endfor %}
+            <span>{{ row.book_title or '—' }}</span>
+          </span>
+          {% else %}{{ row.book_title or '—' }}{% endif %}
+        </td>
         <td>{{ row.posting_number }}</td>
         <td>{{ row.label_number or '—' }}</td>
       </tr>
@@ -24,7 +37,7 @@
   </table>
 </div>
 {% else %}
-<p class="empty">{% if page == 1 %}Подтверждённых заданий пока нет.{% else %}На этой странице записей нет.{% endif %}</p>
+<p class="empty">{% if page == 1 %}Заданий пока нет.{% else %}На этой странице записей нет.{% endif %}</p>
 {% endif %}
 {% if page > 1 or has_next %}
 <nav class="tabs" aria-label="Страницы журнала">
