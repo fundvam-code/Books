@@ -20,7 +20,7 @@
    lpstat -p -d
    ```
 
-3. Оставьте `PUBLIC_DOMAIN=127.0.0.1` в `.env.macos`. Задайте имя пользователя и два независимых секрета для `POSTGRES_PASSWORD` и `AGENT_SHARED_SECRET`. Для каждого можно выполнить `openssl rand -hex 32`. Хеш пароля браузера получите командой `docker run --rm -it caddy:2-alpine caddy hash-password`. Запишите его в одинарных кавычках в `DASHBOARD_PASSWORD_HASH`. Если текущий дашборд использует Google Sheets для мест хранения, перенесите `BOOK_STORAGE_SHEET_ID` и `BOOK_STORAGE_SHEET_GID`.
+3. Оставьте `PUBLIC_DOMAIN=127.0.0.1` в `.env.macos`. Задайте два независимых секрета для `POSTGRES_PASSWORD` и `AGENT_SHARED_SECRET`, например с помощью `openssl rand -hex 32`. Для локального запуска basic auth отключён: используется `Caddyfile.macos`, а порт слушает только `127.0.0.1`, поэтому `DASHBOARD_USERNAME` и `DASHBOARD_PASSWORD_HASH` не нужны. Если текущий дашборд использует Google Sheets для мест хранения, перенесите `BOOK_STORAGE_SHEET_ID` и `BOOK_STORAGE_SHEET_GID`.
 4. В `.env.agent` задайте `DASHBOARD_URL=https://127.0.0.1:8443`, тот же `AGENT_SHARED_SECRET`, `DASHBOARD_CA_FILE=data/macos-caddy-root.crt` и имя очереди в `OZON_PRINTER`. Значение `default` использует принтер macOS по умолчанию. Перенесите файлы ключей площадок по защищённому каналу, следуя [настройке кабинетов](deploy.md#пк-с-агентом). Если файл Ozon теперь лежит в корне клона, укажите `OZON_ENV_FILE=.env.ozon`. Ключи, экспорт базы и этикетки храните вне Git.
 5. Сравните ревизию приложения на сервере и в клоне Mac. Узнайте фактически развёрнутую ревизию у того, кто запускал сервер, если образ был собран из рабочей копии. В релиз для Mac должны входить все функции и изменения схемы, уже работающие на сервере. Если на сервере есть неопубликованный код, сначала включите его в согласованную ревизию и пересоберите образ Mac.
 
@@ -35,7 +35,7 @@ mac config --quiet
 mac up -d --build --wait
 mkdir -p data
 mac exec -T caddy cat /data/caddy/pki/authorities/local/root.crt > data/rehearsal-root.crt
-curl --fail --cacert data/rehearsal-root.crt --user ИМЯ https://127.0.0.1:8443/health
+curl --fail --cacert data/rehearsal-root.crt https://127.0.0.1:8443/health
 ```
 
 `curl` запросит пароль браузера и должен вернуть `{"status":"ok"}`. Для проверки интерфейса в Safari или Chrome добавьте `data/rehearsal-root.crt` в связку ключей входа и задайте доверие для SSL. CA относится только к проекту репетиции. Проект, созданный для рабочего запуска, выпустит свой CA. При необходимости ограничьте репетицию проверкой через `curl`.
@@ -80,10 +80,10 @@ unset COMPOSE_PROJECT_NAME
 mac up -d --wait
 mkdir -p data
 mac exec -T caddy cat /data/caddy/pki/authorities/local/root.crt > data/macos-caddy-root.crt
-curl --fail --cacert data/macos-caddy-root.crt --user ИМЯ https://127.0.0.1:8443/health
+curl --fail --cacert data/macos-caddy-root.crt https://127.0.0.1:8443/health
 ```
 
-Добавьте рабочий CA `data/macos-caddy-root.crt` в связку ключей входа с доверием для SSL. Откройте `https://127.0.0.1:8443/orders` и войдите. До запуска агента сравните историю печати, отметки заказов, справочник мест хранения и имеющиеся PDF с серверным снимком. PDF доступны в пределах срока хранения приложения. Мониторинг может сохранять состояние в базе, поэтому проверяйте его статус до подключения агента.
+Добавьте рабочий CA `data/macos-caddy-root.crt` в связку ключей входа с доверием для SSL. Откройте `https://127.0.0.1:8443/orders` — вход без пароля. До запуска агента сравните историю печати, отметки заказов, справочник мест хранения и имеющиеся PDF с серверным снимком. PDF доступны в пределах срока хранения приложения. Мониторинг может сохранять состояние в базе, поэтому проверяйте его статус до подключения агента.
 
 Убедитесь, что агент старой системы остановлен и что локальный интерфейс открывается без предупреждений о сертификате. Для первой проверки запустите `.venv/bin/python -m agent.run_macos` в терминале. Проверьте статус агента, обновление всех подключённых кабинетов, наличие своих PDF и тестовую печать согласованной этикетки. Восстановите нужную настройку мониторинга после сверки очереди.
 

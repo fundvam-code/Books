@@ -2,6 +2,10 @@ services:
   caddy:
     environment:
       DASHBOARD_TLS_MODE: internal
+    volumes: !override
+      - ./Caddyfile.macos:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
     ports: !override
       - "127.0.0.1:${DASHBOARD_HTTPS_PORT:-8443}:443"
     healthcheck:
