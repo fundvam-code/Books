@@ -2,10 +2,10 @@
   {{ waiting_badge|default('') }}
   {% set return_query = orders_query(account|default(order.account_key), hide_printed|default(false), hide_waiting|default(true)) %}
   <form action="/orders/w/{{ order.posting_number }}/assembly?{{ return_query }}" method="post">
-    <button class="button secondary" type="submit">Собрать</button>
+    <button class="button secondary" type="submit" data-status-modal>Собрать</button>
   </form>
   <form action="/orders/w/{{ order.posting_number }}/assembly?{{ return_query }}" method="post">
-    <button class="button" type="submit" name="print_after" value="true">Собрать и напечатать</button>
+    <button class="button" type="submit" name="print_after" value="true" data-status-modal>Собрать и напечатать</button>
   </form>
   {{ waiting_control(order, waiting, return_account=account|default(none), hide_printed=hide_printed|default(false), hide_waiting=hide_waiting|default(true)) }}
 </div>

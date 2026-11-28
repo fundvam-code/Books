@@ -1,15 +1,59 @@
 services:
-  caddy:
+  database:
+    image: postgres:16-alpine
     environment:
-      DASHBOARD_TLS_MODE: internal
-    volumes: !override
+      POSTGRES_DB: dashboard
+      POSTGRES_USER: dashboard
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Укажите пароль PostgreSQL}
+    volumes:
+      - database:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "dashboard", "-d", "dashboard"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+    restart: unless-stopped
+  dashboard:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    environment:
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Укажите пароль PostgreSQL}
+      PUBLIC_DOMAIN: 127.0.0.1
+      DASHBOARD_HTTPS_PORT: ${DASHBOARD_HTTPS_PORT:-8443}
+      AGENT_SHARED_SECRET: ${AGENT_SHARED_SECRET:?Укажите секрет агента}
+      LABEL_DIR: /labels
+      BOOK_STORAGE_SHEET_ID: ${BOOK_STORAGE_SHEET_ID:-}
+      BOOK_STORAGE_SHEET_GID: ${BOOK_STORAGE_SHEET_GID:-1001}
+    depends_on:
+      database:
+        condition: service_healthy
+    volumes:
+      - labels:/labels
+    healthcheck:
+      test: ["CMD", "python", "-c", "from urllib.request import urlopen; urlopen('http://127.0.0.1:8000/health', timeout=3)"]
+      interval: 15s
+      timeout: 10s
+      start_period: 30s
+      retries: 4
+    restart: unless-stopped
+  caddy:
+    image: caddy:2-alpine
+    volumes:
       - ./Caddyfile.macos:/etc/caddy/Caddyfile:ro
       - caddy_data:/data
       - caddy_config:/config
-    ports: !override
+    ports:
       - "127.0.0.1:${DASHBOARD_HTTPS_PORT:-8443}:443"
     healthcheck:
       test: ["CMD-SHELL", "test -s /data/caddy/pki/authorities/local/root.crt && wget -q -O /dev/null http://127.0.0.1:2019/config/"]
       interval: 2s
       timeout: 3s
       retries: 20
+    restart: unless-stopped
+
+volumes:
+  database:
+  labels:
+  caddy_data:
+  caddy_config:

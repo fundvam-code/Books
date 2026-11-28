@@ -3,16 +3,16 @@
 <div class="label-status">
   <span class="tag {{ 'online' if printed else 'offline' }}">{{ 'Этикетка напечатана' if printed else 'Печать не отмечена' }}</span>
   {% if label_job_id %}
-  <a class="tag label-link" data-label-open href="/labels/{{ label_job_id }}/pdf" target="_blank" rel="noopener">PDF загружен</a>
+  <a class="tag label-link" data-label-open href="/labels/{{ label_job_id }}/pdf">PDF загружен</a>
   {% else %}
-  <form class="label-load" action="{{ order_path }}/label" method="post" target="_blank" rel="noopener" aria-live="polite">
+  <form class="label-load" action="{{ order_path }}/label" method="post" aria-live="polite">
     <button class="tag label-link" type="submit">PDF не загружен</button>
     <span class="error" hidden></span>
   </form>
   {% endif %}
 </div>
 <div class="label-actions">
-  <form class="label-output" action="{{ order_path }}/label" method="post" target="_blank" rel="noopener">
+  <form class="label-output" action="{{ order_path }}/label" method="post">
     <input type="hidden" name="open_pdf" value="true">
     <input type="hidden" name="autoprint" value="true" disabled>
     {% set title = book_title(order) %}
@@ -22,9 +22,9 @@
     <input type="hidden" name="with_title" value="true">
     {% if not title %}<span class="label-option muted">Название ещё не загружено</span>{% endif %}
     {% endif %}
-    <button class="button {{ 'secondary' if return_account }}" type="submit"{% if label_job_id %} hidden{% endif %}>Печать этикетки</button>
+    <button class="button {{ 'secondary' if return_account }}" type="submit" data-status-modal{% if label_job_id %} hidden{% endif %}>Печать этикетки</button>
     {% if return_account and not printed %}
-    <button class="button" type="submit" data-dashboard-print formtarget="_self"
+    <button class="button" type="submit" data-dashboard-print data-status-modal formtarget="_self"
             formaction="{{ order_path }}/dashboard-print?{{ orders_query(return_account, hide_printed, hide_waiting) }}">Напечатать</button>
     {% endif %}
   </form>

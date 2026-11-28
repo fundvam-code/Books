@@ -205,7 +205,19 @@ def batch_versions(db, batch, label_dir):
     return ready, pending, failures
 
 
-def batch_writer(db, batch, label_dir, originals=False):
+def untitled_label_message(item):
+    number = item.get("label_number")
+    label = f"Этикетка № {number}" if number else f'Этикетка отправления {item.get("posting_number") or item["job_id"]}'
+    title = item.get("book_title") or item["title"]
+    return f"{label} для книги «{title}» отправлена на печать без названия."
+
+
+def untitled_print_messages(batch):
+    return [untitled_label_message(item) for item in batch.labels
+            if item.get("printed_without_title")] if batch else []
+
+
+def batch_writer(db, batch, label_dir, originals=False, *, without_title=None):
     titled_jobs = [UUID(item["job_id"]) for item in batch.labels if item["title"]] if not originals else []
     wb_jobs = set(db.scalars(select(Job.id).where(
         Job.account_key == WB_ACCOUNT, Job.id.in_(titled_jobs),
@@ -221,8 +233,10 @@ def batch_writer(db, batch, label_dir, originals=False):
                     require_complete=item.get("require_complete", False),
                 )
             except NoTitleSpace:
-                blocked.append(item["job_id"])
-                continue
+                if without_title is None:
+                    blocked.append(item["job_id"])
+                    continue
+                without_title.add(item["job_id"])
         writer.append(BytesIO(source), import_outline=False)
     if blocked:
         raise BatchTitleSpace(blocked)

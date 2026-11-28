@@ -1,32 +1,13 @@
 {
-    default_sni {$PUBLIC_DOMAIN}
+    default_sni 127.0.0.1
     auto_https disable_redirects
     servers {
         protocols h1 h2
     }
 }
 
-(dashboard_tls_default) {
-}
-
-(dashboard_tls_internal) {
+https://127.0.0.1 {
     tls internal
-}
-
-(dashboard_tls_ip) {
-    tls {
-        issuer acme {
-            profile shortlived
-        }
-    }
-}
-
-:80 {
-    redir https://{$PUBLIC_DOMAIN}:{$DASHBOARD_HTTPS_PORT:8443}{uri} permanent
-}
-
-https://{$PUBLIC_DOMAIN} {
-    import dashboard_tls_{$DASHBOARD_TLS_MODE:default}
     header {
         Cache-Control "no-store"
         X-Content-Type-Options "nosniff"

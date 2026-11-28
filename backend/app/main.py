@@ -37,7 +37,7 @@ from .monitoring import (
 )
 from .monitoring_log import append_event
 from .printing import (PRINT_LEASE, TITLE_SPACE_ERROR, BatchTitleSpace, backfill_print_log,
-                       batch_item, batch_versions, batch_writer, book_title,
+                       batch_item, batch_versions, batch_writer, book_title, untitled_label_message, untitled_print_messages,
                        claim_print, confirm_printed_label, create_batch, label_metadata, order_cover_urls, pdf_label_number,
                        queue_print, record_print, update_monitoring_order)
 from .schemas import (Account, AccountFilter, AgentAccounts, AgentHeartbeat, AssemblyStart, Completion,
@@ -780,10 +780,42 @@ def ozon_assembly_status(request: Request, job_id: UUID, account: AccountFilter 
         print_task = db.get(PrintTask, action.print_task_id) if action.print_task_id else None
         order = db.get(Order, (job.account_key, job.posting_number))
         title = book_title(order)
-        if not title and print_task:
-            batch = db.get(LabelBatch, print_task.batch_id)
-            if batch:
-                title = next((item["book_title"] for item in batch.labels if item.get("book_title")), "")
+        batch = db.get(LabelBatch, print_task.batch_id) if print_task else None
+        if not title and batch:
+            title = next((item["book_title"] for item in batch.labels if item.get("book_title")), "")
+    if request.headers.get("accept") == "application/json":
+        if job.state == "failed":
+            return {"state": job.state, "done": True, "ok": False,
+                    "message": job.error or "Не удалось выполнить сборку Ozon."}
+        if job.state in ("pending", "leased"):
+            return {"state": job.state, "done": False, "ok": True,
+                    "message": "Локальный агент отправляет заказ на сборку и проверяет статус в Ozon."}
+        if not action.print_after:
+            return {"assembled": True, "state": job.state, "done": True, "ok": True,
+                    "message": "Сборка подтверждена Ozon. Отправление появится в списке после обновления."}
+        if not label_job:
+            return {"assembled": True, "state": job.state, "done": False, "ok": True,
+                    "message": "Сборка подтверждена. Создаём задание на этикетку."}
+        if label_job.state == "failed":
+            return {"assembled": True, "state": label_job.state, "done": True, "ok": False,
+                    "message": "Заказ собран, но этикетку получить не удалось. " + (label_job.error or "")}
+        if label_job.state in ("pending", "leased"):
+            return {"assembled": True, "state": label_job.state, "done": False, "ok": True,
+                    "message": "Заказ собран. Загружаем PDF этикетки."}
+        if not print_task:
+            return {"assembled": True, "state": job.state, "done": False, "ok": True,
+                    "message": "PDF этикетки готов. Передаём его принтеру."}
+        if print_task.state == "submitted":
+            return {"assembled": True, "state": print_task.state, "done": True, "ok": True,
+                    "message": "\n".join(["Заказ собран, этикетка передана в очередь принтера. Статус отмечен как «Напечатано».", *untitled_print_messages(batch)])}
+        if print_task.state == "failed":
+            return {"assembled": True, "state": print_task.state, "done": True, "ok": False,
+                    "message": "Заказ собран, но принтер не принял этикетку. Проверьте принтер и очередь печати."}
+        if print_task.state == "unknown":
+            return {"assembled": True, "state": print_task.state, "done": True, "ok": False,
+                    "message": "Заказ собран. Агент не подтвердил печать. Проверьте очередь принтера перед повтором."}
+        return {"assembled": True, "state": print_task.state, "done": False, "ok": True,
+                "message": "Заказ собран. Агент отправляет PDF на принтер."}
     return templates.TemplateResponse(request, "ozon_assembly_status.html", {
         "job": job, "action": action, "label_job": label_job, "print_task": print_task,
         "title": title, "back_url": orders_url(account or job.account_key, hide_printed, hide_waiting),
@@ -827,6 +859,8 @@ def request_wb_assembly(request: Request, posting_number: str,
                 raise HTTPException(409, "Перевод этого задания уже запрошен")
             if db.get(WbAssembly, job_id).print_after != print_after:
                 raise HTTPException(409, "Для заказа уже выполняется другое действие")
+    if request.headers.get("accept") == "application/json":
+        return JSONResponse({"status_url": f"/wb-assembly/{job_id}"}, status_code=202)
     return RedirectResponse(f"/wb-assembly/{job_id}?{orders_query(account, hide_printed, hide_waiting)}", status_code=303)
 
 
@@ -860,6 +894,8 @@ def request_ozon_assembly(request: Request, account_key: Account, posting_number
             if action is None or action.print_after != print_after:
                 raise HTTPException(409, "Для заказа уже выполняется другое действие")
     query = orders_query(account or account_key, hide_printed, hide_waiting)
+    if request.headers.get("accept") == "application/json":
+        return JSONResponse({"status_url": f"/ozon-assembly/{job_id}"}, status_code=202)
     return RedirectResponse(f"/ozon-assembly/{job_id}?{query}", status_code=303)
 
 
@@ -876,6 +912,35 @@ def wb_assembly_status(request: Request, job_id: UUID, account: AccountFilter = 
         batch = db.get(LabelBatch, task.batch_id) if task else None
         title = book_title(order) or (batch.labels[0].get("book_title") if batch and batch.labels else None)
         _, pending, failures = batch_versions(db, batch, LABEL_DIR) if batch else (0, 0, [])
+    if request.headers.get("accept") == "application/json":
+        if job.state == "done" and action.print_after:
+            if not task:
+                return {"assembled": True, "state": job.state, "done": True, "ok": False,
+                        "message": "Заказ перенесён в сборку. Задание печати недоступно."}
+            if task.state == "submitted":
+                return {"assembled": True, "state": task.state, "done": True, "ok": True,
+                        "message": "\n".join(["Стикер передан в очередь принтера.", *untitled_print_messages(batch)])}
+            if task.state == "unknown":
+                return {"assembled": True, "state": task.state, "done": True, "ok": False,
+                        "message": "Агент не подтвердил печать. Проверьте очередь принтера перед повтором."}
+            if task.state == "failed" or failures:
+                return {"assembled": True, "state": task.state, "done": True, "ok": False,
+                        "message": task.error or (failures[0][1] if failures else "Не удалось напечатать стикер.")}
+            if pending:
+                return {"assembled": True, "state": job.state, "done": False, "ok": True,
+                        "message": "Заказ перенесён в сборку. Загружаем стикер."}
+            return {"assembled": True, "state": job.state, "done": False, "ok": True,
+                    "message": "Стикер готов. Ожидаем отправку на принтер."}
+        if job.state == "done":
+            return {"assembled": True, "state": job.state, "done": True, "ok": True,
+                    "message": "Wildberries подтвердил перенос. Заказ появится в списке после обновления."}
+        if job.state == "failed":
+            return {"state": job.state, "done": True, "ok": False, "message": job.error}
+        if action.started_at:
+            return {"state": job.state, "done": False, "ok": True,
+                    "message": "Ожидаем подтверждение Wildberries."}
+        return {"state": job.state, "done": False, "ok": True,
+                "message": "Локальный агент ищет открытую поставку и проверяет задание."}
     return templates.TemplateResponse(request, "wb_assembly_status.html", {
         "job": job, "action": action, "task": task, "title": title, "pending": pending, "failures": failures,
         "back_url": orders_url(account, hide_printed, hide_waiting),
@@ -957,24 +1022,19 @@ def download_print_pdf(task_id: UUID, auth: Agent, token: Lease):
     with write_transaction() as db:
         task = locked_print_task(db, task_id, token, "leased")
         batch = db.get(LabelBatch, task.batch_id)
+        without_title = set()
         try:
-            data = pdf_bytes(batch_writer(db, batch, LABEL_DIR))
-        except BatchTitleSpace as error:
-            task.state = "failed"
-            task.lease_until = None
-            task.error = TITLE_SPACE_ERROR
-            update_monitoring_order(db, task.id, "failed", task.error)
-            batch.labels = [
-                {**item, "title_no_space": item["job_id"] in error.job_ids} for item in batch.labels
-            ]
-            return JSONResponse({"detail": task.error}, status_code=409)
+            data = pdf_bytes(batch_writer(db, batch, LABEL_DIR, without_title=without_title))
         except (PyPdfError, PdfiumError, OSError, ValueError):
             task.state = "failed"
             task.lease_until = None
             task.error = "Не удалось подготовить PDF. Проверьте наличие этикеток и настройку названия книги."
             update_monitoring_order(db, task.id, "failed", task.error)
             return JSONResponse({"detail": task.error}, status_code=409)
-        batch.labels = label_metadata(db, batch, LABEL_DIR)
+        batch.labels = [
+            {**item, "printed_without_title": item["job_id"] in without_title}
+            for item in label_metadata(db, batch, LABEL_DIR)
+        ]
     return inline_pdf(data, "labels.pdf")
 
 
@@ -1048,7 +1108,9 @@ def finish_print(task_id: UUID, body: PrintResult, auth: Agent, token: Lease):
                     print_record = db.get(PrintLog, (task.id, UUID(item["job_id"])))
                     label_number = print_record.label_number if print_record else item.get("label_number")
                     append_event(
-                        db, order, "printer_accepted", "Задание принято очередью принтера",
+                        db, order, "printer_accepted",
+                        untitled_label_message(item) if item.get("printed_without_title")
+                        else "Задание принято очередью принтера",
                         event_key=f"printer-accepted:{task.id}:{account_key}:{posting_number}",
                         label_number=label_number,
                     )
@@ -1127,12 +1189,38 @@ def print_job_status(request: Request, task_id: UUID, account: AccountFilter | N
     state = task.state
     if state == "sending" and task.lease_until <= now():
         state = "unknown"
+    if request.headers.get("accept") == "application/json":
+        total = len(batch.labels) if batch else 0
+        if state == "submitted":
+            message = "PDF передан в очередь принтера на MacBook."
+            if dashboard_item is not None:
+                message += " " + ("Этикетка отмечена как напечатанная." if dashboard_marked
+                                  else "Не удалось поставить отметку. Проверьте состояние отправления.")
+            return {"state": state, "done": True, "ok": True, "message": "\n".join([message, *untitled_print_messages(batch)])}
+        if state == "unknown":
+            return {"state": state, "done": True, "ok": False,
+                    "message": "Агент не подтвердил отправку. Проверьте очередь принтера перед повторной печатью."}
+        if state == "failed" and task.error == TITLE_SPACE_ERROR:
+            return {"state": state, "done": True, "ok": False,
+                    "message": "Не удалось разместить название на этикетке. Откройте карточку отправления."}
+        if state == "failed" or failures:
+            return {"state": state, "done": True, "ok": False,
+                    "message": task.error or (failures[0][1] if failures else "Не удалось выполнить печать.")}
+        if pending:
+            return {"state": state, "done": False, "ok": True,
+                    "message": f"Готово {ready} из {total}. Агент отправит PDF на печать после загрузки всех этикеток."}
+        if state in ("leased", "sending"):
+            return {"state": state, "done": False, "ok": True,
+                    "message": "Агент отправляет PDF в очередь принтера."}
+        return {"state": state, "done": False, "ok": True,
+                "message": "PDF готов. Ожидаем агент с настроенным принтером."}
     return templates.TemplateResponse(request, "print_job.html", {
         "task": task, "batch": batch, "state": state, "ready": ready, "pending": pending, "failures": failures,
         "back_url": orders_url(account or batch.account, hide_printed, hide_waiting),
         "dashboard_print": dashboard_item is not None,
         "dashboard_marked": dashboard_marked,
         "title_error": state == "failed" and task.error == TITLE_SPACE_ERROR,
+        "untitled_messages": untitled_print_messages(batch) if state == "submitted" else [],
         "title_postings": [item["posting_number"] for item in batch.labels
                            if item.get("title_no_space") and item.get("posting_number")],
         "originals_url": label_url(f"/label-batches/{batch.id}", originals=True) if not ozon_labels else None,
@@ -1227,6 +1315,8 @@ def print_waiting_label(request: Request, account_key: Account, posting_number: 
         job_id, _ = get_or_enqueue_label(db, order)
         task_id = queue_print(db, account_key, [batch_item(order, job_id, False)])
     query = orders_query(account or account_key, hide_printed, hide_waiting)
+    if request.headers.get("accept") == "application/json":
+        return JSONResponse({"status_url": f"/print-jobs/{task_id}"}, status_code=202)
     return RedirectResponse(f"/print-jobs/{task_id}?{query}", status_code=303)
 
 
@@ -1258,6 +1348,8 @@ def dashboard_print(request: Request, account_key: Account, posting_number: str,
         item["dashboard_print"] = True
         task_id = queue_print(db, account_key, [item])
     query = orders_query(account or account_key, hide_printed, hide_waiting)
+    if request.headers.get("accept") == "application/json":
+        return JSONResponse({"status_url": f"/print-jobs/{task_id}"}, status_code=202)
     return RedirectResponse(f"/print-jobs/{task_id}?{query}", status_code=303)
 
 
@@ -1274,10 +1366,13 @@ def request_label(request: Request, account_key: Account, posting_number: str,
         if db.get(OrderWaiting, (account_key, posting_number)):
             raise HTTPException(409, "Сначала верните отправление из ожидания")
         job_id, ready = get_or_enqueue_label(db, order)
-        if autoprint and request.headers.get("accept") != "application/json":
-            task_id = queue_print(db, account_key, [batch_item(order, job_id, with_title)])
-            return RedirectResponse(f"/print-jobs/{task_id}", status_code=303)
-    if request.headers.get("accept") == "application/json":
+        task_id = queue_print(db, account_key, [batch_item(order, job_id, with_title)]) if autoprint else None
+    accept_json = request.headers.get("accept") == "application/json"
+    if task_id is not None:
+        if accept_json:
+            return JSONResponse({"status_url": f"/print-jobs/{task_id}"}, status_code=202)
+        return RedirectResponse(f"/print-jobs/{task_id}", status_code=303)
+    if accept_json:
         return JSONResponse({"status_url": f"/labels/{job_id}"}, status_code=200 if ready else 202)
     suffix = "/pdf" if ready else ""
     url = label_url(f"/labels/{job_id}{suffix}", with_title=with_title, autoprint=autoprint,
@@ -1309,6 +1404,8 @@ def request_label_batch(request: Request, account: Annotated[AccountFilter, Form
             items.append(batch_item(order, job_id, with_title))
         if autoprint:
             task_id = queue_print(db, account, items)
+            if request.headers.get("accept") == "application/json":
+                return JSONResponse({"status_url": f"/print-jobs/{task_id}"}, status_code=202)
             return RedirectResponse(f"/print-jobs/{task_id}", status_code=303)
         batch_id = create_batch(db, account, items)
     return RedirectResponse(label_url(f"/label-batches/{batch_id}", hide_printed=hide_printed,

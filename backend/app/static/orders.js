@@ -5,7 +5,58 @@ for (const selector of ["hide-printed", "hide-waiting"]) {
 }
 
 const shiftLoading = document.querySelector("[data-shift-loading]");
-setTimeout(() => refreshLabelPage(), shiftLoading ? 3000 : 5 * 60 * 1000);
+let refreshingOrders = false;
+let refreshAgain = false;
+
+async function refreshOrders() {
+    if (refreshingOrders) {
+        refreshAgain = true;
+        return;
+    }
+    refreshingOrders = true;
+    try {
+        const response = await fetch(window.location.href, {
+            cache: "no-store",
+            signal: AbortSignal.timeout(10000),
+        });
+        if (!response.ok) return;
+        const page = new DOMParser().parseFromString(await response.text(), "text/html");
+        const incoming = page.querySelector("[data-orders-content]");
+        const current = document.querySelector("[data-orders-content]");
+        if (!incoming || current.innerHTML === incoming.innerHTML) return;
+        if (current.querySelector(".label-load button:disabled")) return;
+
+        const options = new Map();
+        function key(input) {
+            return input.form.closest("[data-order-key]")?.dataset.orderKey
+                || input.form.elements.account?.value;
+        }
+        for (const input of current.querySelectorAll('input[type="checkbox"][name="with_title"]')) {
+            options.set(key(input), input.checked);
+        }
+        for (const input of incoming.querySelectorAll('input[type="checkbox"][name="with_title"]')) {
+            if (options.has(key(input))) input.checked = options.get(key(input));
+        }
+        current.replaceWith(incoming);
+    } catch {
+        // Keep the displayed orders and retry on the next refresh.
+    } finally {
+        refreshingOrders = false;
+        if (refreshAgain) {
+            refreshAgain = false;
+            refreshOrders();
+        }
+    }
+}
+
+document.addEventListener("orders-changed", () => {
+    refreshOrders();
+    refreshDashboardCounts();
+});
+setInterval(() => {
+    if (!document.hidden) refreshOrders();
+}, 15000);
+if (shiftLoading) setTimeout(refreshOrders, 3000);
 
 const stageCounts = document.querySelectorAll("[data-stage-count]");
 const activeCabinetTab = document.querySelector('.tabs [aria-current="page"]');

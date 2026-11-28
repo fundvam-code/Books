@@ -2,12 +2,12 @@
 {% from "label_controls.html" import label_controls, waiting_control %}
 {% block title %}Отправление {{ order.posting_number }}{% endblock %}
 {% block head %}
-<script src="/static/label-load.js" defer></script>
-<script src="/static/label-window.js" defer></script>
+<script src="/static/label-load.js?v=3" defer></script>
+<script src="/static/label-window.js?v=5" defer></script>
 {% endblock %}
 {% block content %}
 <a class="back" href="{{ orders_url(account, hide_printed, hide_waiting) }}">← К отправлениям</a>
-<div data-order-label>
+<div data-order-label data-order-key="{{ order.account_key }}/{{ order.posting_number }}">
 {% set number = label_number(label_job_id, order.account_key) %}
 <div class="heading">
   <div>

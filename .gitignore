@@ -11,3 +11,8 @@ data/
 labels/
 *.log
 *.dump
+
+.DS_Store
+/books-migration-*/
+/avito_check_connection.py
+/avito_list_items.py

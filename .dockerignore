@@ -2,8 +2,6 @@
 !pyproject.toml
 !backend/
 !backend/**
-!agent/
-!agent/**
 **/.env
 **/.env.*
 **/__pycache__

@@ -2,8 +2,8 @@
   {% if printed %}
   <span class="tag online">Этикетка напечатана</span>
   {% else %}
-  <form action="/orders/{{ order.account_key }}/{{ order.posting_number }}/waiting-print?{{ orders_query(account, hide_printed, hide_waiting) }}" method="post" target="_blank" rel="noopener">
-    <button class="button" type="submit">Напечатать</button>
+  <form action="/orders/{{ order.account_key }}/{{ order.posting_number }}/waiting-print?{{ orders_query(account, hide_printed, hide_waiting) }}" method="post">
+    <button class="button" type="submit" data-status-modal>Напечатать</button>
   </form>
   {% endif %}
 {% endif %}

@@ -3,9 +3,9 @@
 {% block title %}{{ active_tab_title }} ({{ active_tab_count|join(' / ') }}) — Заказы FBS{% endblock %}
 {% block head %}
 <script src="/static/monitoring.js?v=9" defer></script>
-<script src="/static/orders.js?v=4" defer></script>
-<script src="/static/label-load.js" defer></script>
-<script src="/static/label-window.js?v=2" defer></script>
+<script src="/static/orders.js?v=5" defer></script>
+<script src="/static/label-load.js?v=3" defer></script>
+<script src="/static/label-window.js?v=5" defer></script>
 {% endblock %}
 {% block content %}
 {% macro order_card(order, printed, label_job_id, waiting) %}
@@ -14,7 +14,7 @@
     {% for product in order.data.products %}
       {% if storage_match(product) %}{% set ns.has_storage = true %}{% endif %}
     {% endfor %}
-    <article class="card{% if ns.has_storage %} has-storage{% endif %}" data-order-label>
+    <article class="card{% if ns.has_storage %} has-storage{% endif %}" data-order-label data-order-key="{{ order.account_key }}/{{ order.posting_number }}">
       <div class="card-products">
         <ul class="products">
           {% for product in order.data.products[:3] %}
@@ -36,12 +36,12 @@
             {{ waiting_badge }}
             {% if order.account_key in ozon_assembly_accounts %}
             <form action="/orders/{{ order.account_key }}/{{ order.posting_number }}/assembly?{{ orders_query(account, hide_printed, hide_waiting) }}" method="post">
-              <button class="button secondary" type="submit">Собрать</button>
+              <button class="button secondary" type="submit" data-status-modal>Собрать</button>
             </form>
             {% if order.account_key in ozon_print_accounts %}
             <form action="/orders/{{ order.account_key }}/{{ order.posting_number }}/assembly?{{ orders_query(account, hide_printed, hide_waiting) }}" method="post">
               <input type="hidden" name="print_after" value="true">
-              <button class="button" type="submit">Собрать и напечатать</button>
+              <button class="button" type="submit" data-status-modal>Собрать и напечатать</button>
             </form>
             {% else %}<span class="muted">Для печати запустите агент на Mac с настроенным принтером.</span>{% endif %}
             {% else %}<span class="muted">Агент Ozon с правом сборки не в сети.</span>{% endif %}
@@ -101,11 +101,12 @@
     <label><input id="hide-waiting" type="checkbox" name="hide_waiting" value="true"{% if hide_waiting %} checked{% endif %}> Скрывать ожидающие</label>
     <noscript><button class="button secondary" type="submit">Применить</button></noscript>
   </form>
-  {% if has_printable %}{% include "label_print_option.html" %}{% endif %}
+  {% include "label_print_option.html" %}
 </div>
+<div data-orders-content>
 {% if has_printable %}
     {% macro batch_button(target, text) %}
-      <form class="batch-label-form label-output" action="/label-batches" method="post" target="_blank" rel="noopener">
+      <form class="batch-label-form label-output" action="/label-batches" method="post">
         <input type="hidden" name="account" value="{{ target }}">
         <input type="hidden" name="autoprint" value="true" disabled>
         {% if hide_printed %}<input type="hidden" name="hide_printed" value="true">{% endif %}
@@ -115,7 +116,7 @@
         {% else %}
         <input type="hidden" name="with_title" value="true">
         {% endif %}
-        <button class="button" type="submit">{{ text }}</button>
+        <button class="button" type="submit" data-status-modal>{{ text }}</button>
       </form>
     {% endmacro %}
     {% if account == 'all' %}
@@ -148,6 +149,7 @@
   <p class="empty">Нет отправлений в ожидании.</p>
   {% endfor %}
 </section>
+</div>
 <footer class="orders-footer" id="book-storage">
   <a href="/monitoring">Мониторинг новых заказов</a>
   <a href="/print-log?{{ orders_query(account, hide_printed, hide_waiting) }}">Журнал печати</a>

@@ -187,9 +187,3 @@ async def run(*, dashboard_ca_file: Path | None = None):
                     log.warning("Сервер дашборда не принял запрос агента")
                     await asyncio.sleep(delay)
                     delay = min(delay * 2, 60)
-
-
-if __name__ == "__main__":
-    logging.basicConfig(level=logging.INFO)
-    logging.getLogger("httpx").setLevel(logging.WARNING)
-    asyncio.run(run())

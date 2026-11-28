@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>{% block title %}Заказы FBS{% endblock %}</title>
-  <link rel="stylesheet" href="/static/dashboard.css?v=7">
+  <link rel="stylesheet" href="/static/dashboard.css?v=10">
   {% block head %}{% endblock %}
 </head>
 <body>
@@ -13,5 +13,17 @@
     <a href="/monitoring">Мониторинг</a>
   </header>
   <main class="page">{% block content %}{% endblock %}</main>
+  <aside class="order-notices" aria-label="Очередь операций"></aside>
+  <template id="order-notice">
+    <section class="order-notice">
+      <header>
+        <strong data-status-title></strong>
+        <button type="button" data-status-close aria-label="Закрыть" hidden>×</button>
+      </header>
+      <p data-status-message role="status"></p>
+      <a data-status-link hidden>Открыть статус</a>
+    </section>
+  </template>
+  <script src="/static/status-modal.js?v=3" defer></script>
 </body>
 </html>

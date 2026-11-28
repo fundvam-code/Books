@@ -2,20 +2,15 @@
 set -euo pipefail
 umask 077
 
-if [[ $# != 3 ]]; then
-    echo "Использование: $0 backup|restore server|macos каталог_копии" >&2
+if [[ $# != 2 ]]; then
+    echo "Использование: $0 backup|restore каталог_копии" >&2
     exit 2
 fi
 
 mode=$1
-target=$2
-backup=$3
-compose=(docker compose)
-case "$target" in
-    server) compose+=(--env-file .env.server -f compose.server.yaml) ;;
-    macos) compose+=(--env-file .env.macos -f compose.server.yaml -f compose.macos.yaml) ;;
-    *) echo "Выберите server или macos" >&2; exit 2 ;;
-esac
+backup=$2
+root=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
+compose=(docker compose --env-file "$root/.env.macos" -f "$root/compose.macos.yaml")
 
 database=("${compose[@]}" exec -T database)
 labels=("${compose[@]}" run --no-deps --rm -T --pull never --entrypoint tar dashboard)
