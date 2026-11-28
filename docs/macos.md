@@ -18,7 +18,7 @@ lpstat -p -d
 - В `.env.macos` заполните `POSTGRES_PASSWORD` и `AGENT_SHARED_SECRET` независимыми секретами. Для генерации каждого используйте `openssl rand -hex 32`. Для каталога мест хранения можно указать `BOOK_STORAGE_SHEET_ID` и `BOOK_STORAGE_SHEET_GID`.
 - В `.env.agent` укажите тот же `AGENT_SHARED_SECRET`. По умолчанию `OZON_PRINTER=default` использует принтер macOS по умолчанию. При смене порта в `.env.macos` поменяйте порт и в `DASHBOARD_URL`.
 - Для Ozon скопируйте `.env.ozon.example` в `.env.ozon` и заполните Client ID и API-ключ каждого используемого кабинета. Для Wildberries скопируйте `.env.wb.example` в `.env.wb` и заполните токен Marketplace. `WB_CONTENT_TOKEN` используется для карточек товаров, а `WB_WRITE_TOKEN` с правами записи нужен для сборки.
-- При обновлении действующей установки используйте текущую `.env.macos` и прежнее значение `COMPOSE_PROJECT_NAME`. По этому имени Compose находит рабочие тома базы, этикеток и сертификата.
+- При обновлении действующей установки используйте текущую `.env.macos` и прежнее значение `COMPOSE_PROJECT_NAME`. По умолчанию имя проекта определяет имена томов базы, этикеток и сертификата. При переименовании проекта задайте `BOOKS_VOLUME_PROJECT` равным прежнему префиксу томов. Для восстановления в свежий проект оставьте `BOOKS_VOLUME_PROJECT` пустым.
 
 ## Запуск
 
@@ -58,6 +58,7 @@ mac up -d --wait dashboard
 
 ```bash
 export COMPOSE_PROJECT_NAME=books-restore
+export BOOKS_VOLUME_PROJECT=
 mac build dashboard
 mac up -d --wait database
 scripts/dashboard-data restore "$HOME/books-backup-ДАТА"

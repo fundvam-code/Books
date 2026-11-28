@@ -1,3 +1,5 @@
+name: books-manager-mp
+
 services:
   database:
     image: postgres:16-alpine
@@ -54,6 +56,10 @@ services:
 
 volumes:
   database:
+    name: ${BOOKS_VOLUME_PROJECT:-${COMPOSE_PROJECT_NAME:-books-manager-mp}}_database
   labels:
+    name: ${BOOKS_VOLUME_PROJECT:-${COMPOSE_PROJECT_NAME:-books-manager-mp}}_labels
   caddy_data:
+    name: ${BOOKS_VOLUME_PROJECT:-${COMPOSE_PROJECT_NAME:-books-manager-mp}}_caddy_data
   caddy_config:
+    name: ${BOOKS_VOLUME_PROJECT:-${COMPOSE_PROJECT_NAME:-books-manager-mp}}_caddy_config

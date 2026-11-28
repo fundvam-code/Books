@@ -34,6 +34,11 @@
         card.querySelector("[data-status-close]").hidden = !data.done;
     }
 
+    function dismissLater(card, data) {
+        const duration = data.ok === false || data.message?.includes("без названия") ? 20000 : 6000;
+        setTimeout(() => card.remove(), duration);
+    }
+
     async function pollStatus(url, card) {
         const deadline = Date.now() + 5 * 60 * 1000;
         let failures = 0;
@@ -54,7 +59,10 @@
                     assemblyRefreshed = true;
                     document.dispatchEvent(new Event("orders-changed"));
                 }
-                if (data.done) return;
+                if (data.done) {
+                    dismissLater(card, data);
+                    return;
+                }
             } catch (error) {
                 if (++failures >= 3) throw error;
             }
@@ -109,7 +117,9 @@
             link.hidden = false;
             await pollStatus(payload.status_url, card);
         } catch (error) {
-            render(card, { done: true, ok: false, message: error.message || "Не удалось получить статус." });
+            const result = { done: true, ok: false, message: error.message || "Не удалось получить статус." };
+            render(card, result);
+            dismissLater(card, result);
         } finally {
             active.delete(key);
             button.disabled = false;
